@@ -1,0 +1,10 @@
+/_b/
+/_d/
+/_o/
+.DS_Store
+/cmake-build-debug
+/cmake-build-release
+.idea
+octave-workspace
+/CMakeUserPresets.json
+/_i/

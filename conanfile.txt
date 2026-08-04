@@ -1,0 +1,10 @@
+[requires]
+gtest/1.17.0
+magic_enum/0.9.8
+abseil/20260526.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[options]
