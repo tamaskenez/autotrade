@@ -1,0 +1,61 @@
+# Instrument registry.
+#
+# This is NOT a strategy universe -- it is just the set of things we know how to
+# fetch. A backtest picks its universe by symbol from whatever is in here, so
+# adding an instrument here does not commit any strategy to trading it.
+#
+# After editing, re-run init_db.py (idempotent) to apply the changes.
+#
+# `providers` maps provider name -> that provider's identifier for the
+# instrument. Omit a provider if it uses our canonical symbol, which is the
+# usual case; omit the key entirely if every provider does.
+
+[[provider]]
+name = "tiingo"
+kind = "vendor"
+
+[[provider]]
+name = "eodhd"
+kind = "vendor"
+
+[[provider]]
+name = "fred"
+kind = "official"
+notes = "Federal Reserve H.15. Authoritative for Treasury rates."
+
+[[provider]]
+name = "ssga"
+kind = "issuer"
+notes = "Ground truth for SPY distributions."
+
+[[provider]]
+name = "ishares"
+kind = "issuer"
+notes = "Ground truth for EFA and IEF distributions."
+
+
+[[instrument]]
+symbol = "SPY"
+kind = "equity"
+description = "SPDR S&P 500 ETF Trust"
+
+[[instrument]]
+symbol = "EFA"
+kind = "equity"
+description = "iShares MSCI EAFE ETF"
+
+[[instrument]]
+symbol = "IEF"
+kind = "equity"
+description = "iShares 7-10 Year Treasury Bond ETF"
+
+[[instrument]]
+symbol = "BIL"
+kind = "equity"
+description = "SPDR Bloomberg 1-3 Month T-Bill ETF"
+
+[[instrument]]
+symbol = "DTB3"
+kind = "rate"
+description = "3-Month Treasury Bill, secondary market rate, discount basis"
+providers = { fred = "DTB3" }

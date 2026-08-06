@@ -8,3 +8,10 @@
 octave-workspace
 /CMakeUserPresets.json
 /_i/
+
+# market data store and raw vendor payload cache. Vendor licences are
+# internal-use only, so raw payloads must never be committed.
+/_md/
+.venv/
+__pycache__/
+.pytest_cache/

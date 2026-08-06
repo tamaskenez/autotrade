@@ -1,0 +1,2 @@
+- Plan or implement only what is strictly necessary. If there are potential future needs which could be costly to address later, warn the user but don't add it to the plan automatically.
+-

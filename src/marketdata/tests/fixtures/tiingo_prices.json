@@ -1,0 +1,62 @@
+[
+  {
+    "date": "2024-03-14T00:00:00.000Z",
+    "open": 512.0,
+    "high": 514.2,
+    "low": 511.0,
+    "close": 513.5,
+    "volume": 70000000,
+    "adjOpen": 255.2,
+    "adjHigh": 256.3,
+    "adjLow": 254.71,
+    "adjClose": 255.95,
+    "adjVolume": 140000000,
+    "divCash": 0.0,
+    "splitFactor": 1.0
+  },
+  {
+    "date": "2024-03-15T00:00:00.000Z",
+    "open": 513.0,
+    "high": 515.0,
+    "low": 511.5,
+    "close": 512.0,
+    "volume": 95000000,
+    "adjOpen": 256.5,
+    "adjHigh": 257.5,
+    "adjLow": 255.75,
+    "adjClose": 256.0,
+    "adjVolume": 190000000,
+    "divCash": 1.5951,
+    "splitFactor": 1.0
+  },
+  {
+    "date": "2024-03-18T00:00:00.000Z",
+    "open": 256.5,
+    "high": 258.0,
+    "low": 255.9,
+    "close": 257.4,
+    "volume": 140000000,
+    "adjOpen": 256.5,
+    "adjHigh": 258.0,
+    "adjLow": 255.9,
+    "adjClose": 257.4,
+    "adjVolume": 140000000,
+    "divCash": 0.0,
+    "splitFactor": 2.0
+  },
+  {
+    "date": "2024-03-19T00:00:00.000Z",
+    "open": 257.5,
+    "high": 259.9,
+    "low": 257.0,
+    "close": 259.2,
+    "volume": 68000000,
+    "adjOpen": 257.5,
+    "adjHigh": 259.9,
+    "adjLow": 257.0,
+    "adjClose": 259.2,
+    "adjVolume": 68000000,
+    "divCash": 0.0,
+    "splitFactor": 1.0
+  }
+]

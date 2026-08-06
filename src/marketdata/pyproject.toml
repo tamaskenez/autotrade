@@ -1,0 +1,19 @@
+[project]
+name = "marketdata"
+version = "0.1.0"
+description = "Market data ingestion for the autotrade backtests"
+requires-python = ">=3.14"
+dependencies = ["requests>=2.32"]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+# Generated state belongs in the workspace, not next to the sources.
+# Relative to this file's directory; see config.WORKSPACE.
+cache_dir = "../../_md/pytest_cache"
