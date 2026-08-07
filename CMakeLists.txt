@@ -7,6 +7,8 @@ project(autotrade VERSION 0.1.0)
 # back into a warning — Conan's config files select the correct variant at link time.
 cmake_policy(SET CMP0111 OLD)
 
+set(CMAKE_FIND_USE_PACKAGE_REGISTRY OFF)
+
 if(NOT CMAKE_PREFIX_PATH)
     set(CMAKE_PREFIX_PATH "${PROJECT_SOURCE_DIR}/_d")
 endif()
@@ -23,6 +25,9 @@ set_property(GLOBAL PROPERTY USE_FOLDERS YES)
 find_package(GTest REQUIRED CONFIG)
 find_package(magic_enum REQUIRED CONFIG)
 find_package(absl REQUIRED CONFIG)
+find_package(CURL REQUIRED CONFIG)
+find_package(reflectcpp REQUIRED CONFIG)
+
 
 include(compiler_warnings.cmake)
 

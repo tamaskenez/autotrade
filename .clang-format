@@ -1,0 +1,36 @@
+AccessModifierOffset: -4
+AlignAfterOpenBracket: BlockIndent
+AlignArrayOfStructures: Left
+AlignEscapedNewlines: Left
+AlignOperands:   AlignAfterOperator
+AllowShortBlocksOnASingleLine: Empty
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortLambdasOnASingleLine: Empty
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: false
+BinPackParameters: false
+BitFieldColonSpacing: After
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeBraces: Linux
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+ColumnLimit:     120
+CompactNamespaces: true
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 2
+IndentPPDirectives: BeforeHash
+IndentWidth:     4
+InsertNewlineAtEOF: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+LineEnding:      LF
+PackConstructorInitializers: Never
+PointerAlignment: Left
+PPIndentWidth:   2
+SpaceAfterTemplateKeyword: false
+Macros:
+- INFIX_GLM_DOT=* Binder() *
+- INFIX_GLM_DOT(X)=* Binder() * (X)
+- "EVARIANT_CASE(w, n, a, v)=case n:"
+IfMacros: [IF_MATCH]
