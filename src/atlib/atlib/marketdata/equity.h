@@ -27,7 +27,10 @@
 //   reject bad input at the boundary, which is the only place it can be
 //   recognised as bad.
 //
-//   The conversion to an instant becomes visible. See published_at() below.
+//   Nothing here can be mistaken for an instant. A local_time does not compare
+//   against a sys_time, so a trading date cannot drift into being treated as a
+//   moment in UTC -- which is the mistake that a timezone would then have to be
+//   invented to correct.
 //
 // The cost is calendar arithmetic -- "twelve months back", "last day of the
 // month" -- which needs a chr::year_month_day{d} round-trip. That belongs to
@@ -65,7 +68,7 @@ struct Split {
 };
 
 // One instrument's history, ascending by date, truncated to what the caller was
-// entitled to see -- see MarketData::equity_history.
+// entitled to see -- see equity_history().
 struct EquityHistory {
     string symbol;
     vector<DailyBar> bars;
@@ -73,22 +76,12 @@ struct EquityHistory {
     vector<Split> splits;
 };
 
-// A daily row dated D is not knowable until after that day's close. US equity
-// sessions close at 20:00 UTC under EDT and 21:00 under EST; taking the later of
-// the two never claims a row was available before it was, at the cost of up to
-// an hour of conservatism in summer, and needs no timezone database.
+// Which days have data is not something to ask a calendar: it is the set of
+// dates present in `bars`. Weekends, exchange holidays, half days and the
+// instrument's own listing date all fall out of that set for free, correctly,
+// per instrument, without a holiday table to maintain or get wrong.
 //
-// Distributions and splits go through the same test. An ex-date is announced
-// weeks in advance in reality, but the vendor payload only reveals it alongside
-// the bar, so treating it as same-day news is both simpler and conservative.
-constexpr chr::hours k_daily_row_published_after{21};
-
-// The time_since_epoch() round-trip is the whole timezone assumption of this
-// library, in one expression: it reinterprets a calendar day in New York as the
-// same-numbered day in UTC. Nothing else may do this. It is deliberately ugly
-// so that the day someone needs real exchange-local time, grep finds the one
-// place to fix.
-inline chr::sys_seconds published_at(chr::local_days date)
-{
-    return chr::sys_days{date.time_since_epoch()} + k_daily_row_published_after;
-}
+// The set says nothing about the future. Whether a bar is missing because the
+// exchange was shut or because the vendor has not published it yet is not
+// answerable from here, and nothing in this library tries -- see covers() in
+// MarketData.h for who carries that burden instead.

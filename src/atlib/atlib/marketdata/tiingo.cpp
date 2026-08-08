@@ -58,8 +58,8 @@ struct Row {
 
 // "1993-01-29T00:00:00.000Z" -> 1993-01-29.
 //
-// Only the date is meaningful. The time is always midnight UTC, which is not
-// when anything traded -- see published_at() for when a bar becomes knowable.
+// Only the date is meaningful. The time is always midnight UTC, which is not when
+// anything traded, and is discarded rather than interpreted.
 expected<chr::local_days, string> parse_date(string_view text)
 {
     // Reject rather than repair. A date is the one field where a wrong-but-
