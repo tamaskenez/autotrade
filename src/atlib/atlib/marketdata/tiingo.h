@@ -16,8 +16,8 @@
 namespace tiingo
 {
 
-constexpr string_view kName = "tiingo";
-constexpr string_view kFileExtension = "json";
+constexpr string_view k_name = "tiingo";
+constexpr string_view k_file_extension = "json";
 
 // Downloads the full available history for `symbol`, as bytes, unparsed.
 //
