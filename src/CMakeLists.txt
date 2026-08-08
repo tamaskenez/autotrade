@@ -1,2 +1,3 @@
 add_subdirectory(atlib)
 add_subdirectory(p001_dual_mom_fixed_etf)
+add_subdirectory(playground)
