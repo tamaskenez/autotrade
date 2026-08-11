@@ -96,6 +96,50 @@ void drop_after(vector<Row>& rows, chr::local_days as_of, DateOf date_of)
     rows.erase(ra::upper_bound(rows, as_of, {}, date_of), rows.end());
 }
 
+// The cached payload at `path`, parsed. nullopt when there is nothing cached --
+// which is not a failure, it is the state before the first download.
+//
+// A cached payload that will not parse is reported, not quietly replaced. It
+// arrived by a rename from a complete temporary, so it did not get that way on
+// its own, and downloading over it would erase the evidence of whatever did.
+template<class History, class Parse>
+expected<optional<History>, string> read_cached(const fs::path& path, string_view symbol, Parse parse_payload)
+{
+    std::error_code ec;
+    if (!fs::exists(path, ec)) {
+        return optional<History>{};
+    }
+
+    const auto payload = read_file_to_string(path);
+    if (!payload) {
+        return unexpected(format("{}: {}", path.string(), payload.error()));
+    }
+    auto parsed = parse_payload(symbol, *payload);
+    if (!parsed) {
+        return unexpected(format("{}: {}", path.string(), parsed.error()));
+    }
+    return optional<History>(std::move(*parsed));
+}
+
+// Downloads the full history, replaces the cached payload with it, and parses it.
+template<class History, class Fetch, class Parse>
+expected<History, string>
+download_to_cache(const fs::path& path, string_view symbol, Fetch fetch_payload, Parse parse_payload)
+{
+    const auto payload = fetch_payload(symbol);
+    if (!payload) {
+        return unexpected(payload.error());
+    }
+    if (const auto written = write_cache(path, *payload); !written) {
+        return unexpected(written.error());
+    }
+    auto parsed = parse_payload(symbol, *payload);
+    if (!parsed) {
+        return unexpected(parsed.error());
+    }
+    return std::move(*parsed);
+}
+
 // The body of equity_history() and rate_history() both.
 //
 // What differs between them is only what a payload parses into; the rules -- read
@@ -123,38 +167,18 @@ expected<History, string> load_history(
     const auto [name, file_extension] = provider;
     const fs::path path = payload_path(config, provider, symbol);
 
-    optional<History> history;
-
-    std::error_code ec;
-    if (fs::exists(path, ec)) {
-        const auto payload = read_file_to_string(path);
-        if (!payload) {
-            return unexpected(format("{}: {}", path.string(), payload.error()));
-        }
-        // A cached payload that will not parse is reported, not quietly replaced.
-        // It arrived by a rename from a complete temporary, so it did not get that
-        // way on its own, and downloading over it would erase the evidence of
-        // whatever did.
-        auto parsed = parse_payload(symbol, *payload);
-        if (!parsed) {
-            return unexpected(format("{}: {}", path.string(), parsed.error()));
-        }
-        history = std::move(*parsed);
+    auto cached = read_cached<History>(path, symbol, parse_payload);
+    if (!cached) {
+        return unexpected(cached.error());
     }
+    optional<History> history = std::move(*cached);
 
     if (!history || !covers(*history, as_of)) {
-        const auto payload = fetch_payload(symbol);
-        if (!payload) {
-            return unexpected(payload.error());
+        auto downloaded = download_to_cache<History>(path, symbol, fetch_payload, parse_payload);
+        if (!downloaded) {
+            return unexpected(downloaded.error());
         }
-        if (const auto written = write_cache(path, *payload); !written) {
-            return unexpected(written.error());
-        }
-        auto parsed = parse_payload(symbol, *payload);
-        if (!parsed) {
-            return unexpected(parsed.error());
-        }
-        history = std::move(*parsed);
+        history = std::move(*downloaded);
     }
 
     if (!covers(*history, as_of)) {
@@ -255,4 +279,101 @@ equity_history(const MarketDataConfig& config, Provider provider, string_view sy
 expected<RateHistory, string> rate_history(const MarketDataConfig& config, string_view symbol, chr::local_days as_of)
 {
     return load_history<RateHistory>(config, k_fred, symbol, as_of, fred::fetch, fred::parse);
+}
+
+expected<const EquityHistory*, string> MarketData::equity(string_view symbol, chr::local_days day)
+{
+    auto entry = equities.find(symbol);
+    if (entry == equities.end()) {
+        if (!is_plain_filename(symbol)) {
+            return unexpected(format("not a usable symbol: \"{}\"", symbol));
+        }
+        auto cached = read_cached<EquityHistory>(
+          payload_path(config, info(provider), symbol), symbol, [this](string_view s, string_view payload) {
+              return parse(provider, s, payload);
+          }
+        );
+        if (!cached) {
+            return unexpected(cached.error());
+        }
+        // Inserted even when there was nothing on disk, so that the download below
+        // is attempted once for this symbol and not once per query.
+        entry = equities.try_emplace(string(symbol)).first;
+        entry->second.history = std::move(*cached);
+    }
+
+    CachedEquity& cache = entry->second;
+
+    if (!cache.history || !covers(*cache.history, day)) {
+        if (cache.download_error) {
+            return unexpected(*cache.download_error);
+        }
+        if (!cache.downloaded) {
+            // Marked before the attempt rather than after it, so that a download
+            // that throws or fails cannot be retried by the next query either.
+            cache.downloaded = true;
+            auto downloaded = download_to_cache<EquityHistory>(
+              payload_path(config, info(provider), symbol),
+              symbol,
+              [this](string_view s) {
+                  return fetch(provider, s);
+              },
+              [this](string_view s, string_view payload) {
+                  return parse(provider, s, payload);
+              }
+            );
+            if (!downloaded) {
+                cache.download_error = downloaded.error();
+                return unexpected(*cache.download_error);
+            }
+            cache.history = std::move(*downloaded);
+        }
+    }
+
+    if (!cache.history) {
+        return unexpected(format("{} {}: no data at all", info(provider).name, symbol));
+    }
+    return &*cache.history;
+}
+
+span<const DailyBar> MarketData::visible(const vector<DailyBar>& bars) const
+{
+    if (!as_of) {
+        return bars;
+    }
+    return {bars.begin(), ra::upper_bound(bars, *as_of, {}, &DailyBar::date)};
+}
+
+expected<DailyBarAvailability, string> MarketData::daily_bar_availability(string_view symbol, chr::local_days day)
+{
+    // The guard, and the reason it terminates rather than reporting: see MarketData.h.
+    CHECK(!as_of || day <= *as_of);
+
+    const auto history = equity(symbol, day);
+    if (!history) {
+        return unexpected(history.error());
+    }
+
+    // Everything below is decided against the visible range and never against the
+    // rows behind it, which is what makes both ends of the answer point-in-time:
+    // `as_of` moves where the history ends, not just what can be read out of it.
+    const span<const DailyBar> bars = visible((*history)->bars);
+
+    if (bars.empty()) {
+        // Nothing visible: either the guard precedes this instrument's inception,
+        // which is what this reports, or the payload has no bars at all -- a
+        // degenerate case in which neither end is informative and no bar is going
+        // to be found either way.
+        return DailyBarAvailability::before_first_bar;
+    }
+    if (day < bars.front().date) {
+        return DailyBarAvailability::before_first_bar;
+    }
+    if (day > bars.back().date) {
+        return DailyBarAvailability::after_last_bar;
+    }
+
+    // Inside the range, so absence here is a closure and not a shortage of data.
+    const auto bar = ra::lower_bound(bars, day, {}, &DailyBar::date);
+    return bar != bars.end() && bar->date == day ? DailyBarAvailability::available : DailyBarAvailability::not_traded;
 }

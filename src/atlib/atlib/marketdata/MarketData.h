@@ -71,6 +71,7 @@ expected<void, string> write_cache(const fs::path& path, string_view payload);
 
 // Drops every row dated after `as_of`. A plain date comparison.
 void truncate_to(EquityHistory& history, chr::local_days as_of);
+
 void truncate_to(RateHistory& history, chr::local_days as_of);
 
 // Daily history for `symbol` as it stood at `as_of`.
@@ -130,3 +131,141 @@ equity_history(const MarketDataConfig& config, Provider provider, string_view sy
 // calendar rather than the exchange's. See RateConvention and RateHistory for
 // both traps before using the numbers.
 expected<RateHistory, string> rate_history(const MarketDataConfig& config, string_view symbol, chr::local_days as_of);
+
+// Where a date sits relative to the daily bars we have for an instrument.
+//
+// Four values rather than a bool because the three ways of not having a bar are
+// three different situations for a caller, and collapsing them puts the work of
+// telling them apart back on whoever asked. An algorithm comparing a basket needs
+// exactly this distinction: every asset answering `not_traded` on the same date is
+// a market holiday and unremarkable, one asset answering `before_first_bar` has
+// simply not listed yet, and a single `not_traded` among `available` ones is a
+// hole in somebody's data and should stop the run.
+//
+// The two ends are not equally firm, which is the other reason to separate them.
+// `before_first_bar` is permanent -- no future download puts a bar before an
+// instrument's inception. `after_last_bar` is provisional and says only that we
+// have run out of history, whether because the session has not happened, or has
+// not been published, or because an `as_of` guard is standing in the way.
+enum class DailyBarAvailability {
+    // There is a bar for this date.
+    available,
+
+    // Inside the range we have, and there is no bar: the exchange was shut. Per
+    // equity.h, the set of dates in `bars` *is* the trading calendar, so this is
+    // what "not a trading day" means here -- there is no holiday table to consult
+    // and a vendor dropping a row would be indistinguishable from a closure.
+    not_traded,
+
+    // Earlier than the first bar we have -- before the instrument listed.
+    before_first_bar,
+
+    // Later than the last bar we have. Not a statement about the exchange.
+    after_last_bar,
+};
+
+// The MarketData provides
+// - queries about time series
+// - an "as_of" guard for simulating that data after a certain date is not available yet, for backtesting
+// - cacheing the parsed data, preprocessing
+//
+// Cacheing behavior: for each query, after checking the as_of guard, it tries to use the cache. If the
+// requested time series doesn't exist in the cache or it's too old, downloads it again.
+//
+// Three rules the queries share, all of them consequences of the two above:
+//
+//   A `day` past `as_of` terminates. It is not an error, because it is not a
+//   runtime condition: a backtest steps over dates this class handed it, so
+//   asking past the guard is a bug in the caller, and routing it through the
+//   `expected` would let a caller that forwards errors upward report the most
+//   serious defect in the system as a data problem.
+//
+//   The cache holds the *whole* parsed history, not the part before `as_of`, so
+//   set_as_of() costs nothing and a backtest can step it forward without
+//   re-parsing megabytes per step. What keeps that from becoming a lookahead
+//   hazard is that no query reads the rows directly: they go through visible(),
+//   which ends the range at `as_of`, so a row past it is unreachable rather than
+//   merely unread.
+//
+//   Bars never leave this class. A query answers a question -- did it trade, what
+//   did it close at -- and hands out no container, so there is no borrowed range
+//   that outlives an as_of change or a refetch.
+class MarketData
+{
+public:
+    explicit MarketData(const MarketDataConfig& config_arg, Provider provider_arg)
+        : config(config_arg)
+        , provider(provider_arg)
+    {
+    }
+
+    void set_as_of(chr::local_days as_of_arg)
+    {
+        as_of = as_of_arg;
+    }
+    void clear_as_of()
+    {
+        as_of.reset();
+    }
+
+    // Where `day` sits relative to the daily bars we have for `symbol`.
+    //
+    // Answered entirely from the visible range, so a bar dated after `as_of` does
+    // not exist for this call -- it is not merely hidden from the answer, it moves
+    // where "the last bar" is. A guard sitting on a Sunday therefore reports the
+    // preceding Saturday as `after_last_bar` and not `not_traded`, even though a
+    // later bar in the payload proves it was a weekend.
+    //
+    // That is the point-in-time answer rather than a defect: standing at that
+    // Sunday, a caller has not seen Monday's bar and so cannot know whether the
+    // gap is a weekend or a feed that has stopped. Reporting `not_traded` there
+    // would be answering from data the caller is not entitled to, which is the
+    // whole thing this class exists to prevent.
+    //
+    // An error means a data problem and only that: an unusable symbol, a cached
+    // payload that will not parse, a download that failed, or a symbol with no
+    // history at all.
+    expected<DailyBarAvailability, string> daily_bar_availability(string_view symbol, chr::local_days day);
+
+private:
+    // One symbol's parsed history, plus what this run has already tried in order
+    // to get it.
+    struct CachedEquity {
+        // nullopt when nothing was cached on disk and no download has succeeded.
+        optional<EquityHistory> history;
+
+        // Whether a download has been attempted this run, and what came of it.
+        //
+        // The flag exists because a miss is answered with `false` rather than an
+        // error: a caller walking forward over dates past the end of the payload
+        // would otherwise trigger a download per date. One attempt per symbol per
+        // run, and afterwards the payload's own last date decides.
+        //
+        // The error is kept rather than discarded so that a failed download does
+        // not decay into `false` on the next query -- a network failure is not a
+        // holiday, and every later query that needs data the cache does not have
+        // gets told the same thing.
+        bool downloaded = false;
+        optional<string> download_error;
+    };
+
+    // The cached history for `symbol`, loading it from disk and downloading once
+    // if what is there does not reach `day`.
+    //
+    // May return a history that still does not reach `day`. That is not an error
+    // here; see has_daily_bar() for what it means.
+    expected<const EquityHistory*, string> equity(string_view symbol, chr::local_days day);
+
+    // The prefix of `bars` that `as_of` allows, which is all of it when no guard
+    // is set. The one place any query is allowed to reach the rows.
+    span<const DailyBar> visible(const vector<DailyBar>& bars) const;
+
+    MarketDataConfig config;
+    Provider provider;
+    optional<chr::local_days> as_of;
+    // If set, all queries return error or terminate if it needs information later than as_of.
+
+    // Keyed by symbol, so a run parses each payload once. std::less<> for lookup
+    // straight from the string_view the queries take, without a string per call.
+    std::map<string, CachedEquity, std::less<>> equities;
+};
