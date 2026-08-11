@@ -1,9 +1,16 @@
 #pragma once
 
 #include <atlib/marketdata/equity.h>
+#include <atlib/marketdata/rate.h>
 
 #include <meadow/cppext.h>
 
+// Which vendor's version of the equity legs to use.
+//
+// A parameter rather than a choice made once, because the whole backtest gets run
+// per provider and the holdings vectors compared -- data source is an axis of the
+// robustness grid, not a decision. It covers equities only. Rates have exactly one
+// source and it is named where it is used; see rate_history().
 enum class Provider {
     tiingo,
 };
@@ -15,7 +22,9 @@ struct MarketDataConfig {
     fs::path workspace_dir;
 };
 
-// The steps of equity_history() below, each callable on its own.
+// The steps of equity_history() and rate_history() below, each callable on its
+// own. Both run the same steps; where one is overloaded, the two histories differ
+// only in which rows it looks at.
 //
 // They are public because that is how they get tested: no part of this pipeline
 // is reachable only through the front door, so no injection point has to exist in
@@ -44,6 +53,16 @@ fs::path cache_path(const MarketDataConfig& config, Provider provider, string_vi
 // and this library does not.
 bool covers(const EquityHistory& history, chr::local_days as_of);
 
+// The same rule for a rate series: its last observation is dated `as_of` or later.
+//
+// The costs land in the same place and are, if anything, easier to trip over. A
+// rate series has its own holidays, which are not the exchange's, so a date that
+// is an ordinary trading day can still have no observation -- and a caller
+// stepping through *equity* dates will hit those. See RateHistory: the gaps are
+// not a calendar, and covering `as_of` is about publication, not about whether
+// the rate existed that day.
+bool covers(const RateHistory& history, chr::local_days as_of);
+
 // Writes the payload to `path`, creating parent directories.
 //
 // Via a temporary and a rename, so an interrupted write cannot leave a truncated
@@ -52,6 +71,7 @@ expected<void, string> write_cache(const fs::path& path, string_view payload);
 
 // Drops every row dated after `as_of`. A plain date comparison.
 void truncate_to(EquityHistory& history, chr::local_days as_of);
+void truncate_to(RateHistory& history, chr::local_days as_of);
 
 // Daily history for `symbol` as it stood at `as_of`.
 //
@@ -82,3 +102,31 @@ void truncate_to(EquityHistory& history, chr::local_days as_of);
 // the way to force a refresh; there is deliberately no flag for it.
 expected<EquityHistory, string>
 equity_history(const MarketDataConfig& config, Provider provider, string_view symbol, chr::local_days as_of);
+
+// Daily rate history for `symbol`, from FRED, as it stood at `as_of`.
+//
+// The same function as equity_history() over a different payload: same cache
+// path, same one-download retry, same freshness rule, same truncation, same
+// error when the data does not reach `as_of`. Everything written above applies
+// here, including the parts about what a call costs and why nothing is
+// memoised -- read it there rather than trusting a summary.
+//
+// No provider parameter, and this is not an oversight to be corrected later.
+// Above, the provider is a parameter because vendors disagree about what SPY did
+// and running the backtest on each of them is the test. FRED does not disagree
+// with anyone: DTB3 is the H.15 release itself, so every other source of it --
+// the Treasury's own API, any commercial feed -- is republishing these numbers
+// rather than measuring them. There is no second opinion to be had and so nothing
+// to diff. If a rate ever arrives that is genuinely someone's estimate, this grows
+// a parameter and that will be the reason.
+//
+// `symbol` is still a parameter, and earns it: DGS3MO is the same bill quoted
+// bond-equivalent instead of discount, which is how the conversion below gets
+// checked.
+//
+// What comes back is quotes and a label saying what basis they are quoted on.
+// Turning that into money is not done here and is not free: DTB3 is a bank
+// discount rate, so it is not a return, and it is published on the Treasury's
+// calendar rather than the exchange's. See RateConvention and RateHistory for
+// both traps before using the numbers.
+expected<RateHistory, string> rate_history(const MarketDataConfig& config, string_view symbol, chr::local_days as_of);

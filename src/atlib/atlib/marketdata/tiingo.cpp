@@ -1,12 +1,12 @@
 #include <atlib/marketdata/tiingo.h>
 
 #include <atlib/marketdata/credentials.h>
+#include <atlib/marketdata/iso_date.h>
 #include <atlib/net/download.h>
 
 #include <rfl/json.hpp>
 
 #include <cctype>
-#include <charconv>
 
 namespace tiingo
 {
@@ -55,50 +55,6 @@ struct Row {
     double div_cash;
     double split_factor;
 };
-
-// "1993-01-29T00:00:00.000Z" -> 1993-01-29.
-//
-// Only the date is meaningful. The time is always midnight UTC, which is not when
-// anything traded, and is discarded rather than interpreted.
-expected<chr::local_days, string> parse_date(string_view text)
-{
-    // Reject rather than repair. A date is the one field where a wrong-but-
-    // plausible value cannot be spotted downstream: it would just quietly place
-    // a bar on the wrong day.
-    const auto malformed = [text] {
-        return unexpected(format("not a date: \"{}\"", text));
-    };
-
-    if (text.size() < 10 || text[4] != '-' || text[7] != '-') {
-        return malformed();
-    }
-
-    const auto number = [text](size_t offset, size_t length) -> optional<int> {
-        int value = 0;
-        const char* begin = text.data() + offset;
-        const auto [end, ec] = std::from_chars(begin, begin + length, value);
-        if (ec != std::errc{} || end != begin + length) {
-            return nullopt;
-        }
-        return value;
-    };
-
-    const auto year = number(0, 4);
-    const auto month = number(5, 2);
-    const auto day = number(8, 2);
-    if (!year || !month || !day) {
-        return malformed();
-    }
-
-    const chr::year_month_day date{
-      chr::year{*year}, chr::month{static_cast<unsigned>(*month)}, chr::day{static_cast<unsigned>(*day)}
-    };
-    if (!date.ok()) {
-        return malformed();
-    }
-
-    return chr::local_days{date};
-}
 
 } // namespace
 
@@ -149,7 +105,9 @@ expected<EquityHistory, string> parse(string_view symbol, string_view payload)
     history.bars.reserve(rows->size());
 
     for (const auto& row : *rows) {
-        const auto date = parse_date(row.date);
+        // "1993-01-29T00:00:00.000Z" -- the time is always midnight UTC, which is
+        // not when anything traded, so parse_iso_date() drops it.
+        const auto date = parse_iso_date(row.date);
         if (!date) {
             return unexpected(format("tiingo {}: {}", symbol, date.error()));
         }
