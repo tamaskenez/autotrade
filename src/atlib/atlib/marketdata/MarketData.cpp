@@ -2,6 +2,7 @@
 
 #include <atlib/marketdata/fred.h>
 #include <atlib/marketdata/tiingo.h>
+#include <atlib/marketdata/total_return.h>
 
 #include <meadow/file.h>
 
@@ -342,6 +343,24 @@ span<const DailyBar> MarketData::visible(const vector<DailyBar>& bars) const
         return bars;
     }
     return {bars.begin(), ra::upper_bound(bars, *as_of, {}, &DailyBar::date)};
+}
+
+expected<double, string>
+MarketData::total_equity_return_factor_close_to_close(string_view symbol, chr::local_days from, chr::local_days to)
+{
+    // Both ends, not just the later one: `from` past the guard with `to` before it
+    // is not a window that runs backwards, it is a caller that has lost track of
+    // which way time goes, and the free function would report it as the former.
+    CHECK(!as_of || from <= *as_of);
+    CHECK(!as_of || to <= *as_of);
+
+    // `to` is the further of the two, so covering it covers the window.
+    const auto history = equity(symbol, to);
+    if (!history) {
+        return unexpected(history.error());
+    }
+
+    return total_return_factor_close_to_close(**history, from, to);
 }
 
 expected<DailyBarAvailability, string> MarketData::daily_bar_availability(string_view symbol, chr::local_days day)

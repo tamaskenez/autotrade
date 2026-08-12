@@ -235,22 +235,6 @@ first_trading_day_on_or_after(MarketData& market_data, const vector<string>& all
     }
 }
 
-// The day `anchor_day` resolves to, moved in whichever direction keeps it inside
-// the period `boundary` named: forward off a period's first day, backward
-// otherwise.
-expected<chr::local_days, string> resolve_anchor(
-  MarketData& market_data,
-  const vector<string>& all_assets,
-  chr::local_days anchor_day,
-  optional<JumpToPeriodBoundary> boundary
-)
-{
-    if (boundary == JumpToPeriodBoundary::first_day) {
-        return first_trading_day_on_or_after(market_data, all_assets, anchor_day);
-    }
-    return last_trading_day_on_or_before(market_data, all_assets, anchor_day);
-}
-
 expected<variant<chr::local_days, NotARebalanceDay>, string> get_past_day_if_first_trading_day_of_period(
   MarketData& market_data,
   const vector<string>& all_assets,
@@ -447,11 +431,37 @@ expected<Response, string> rebalance(
     // then compare returns over unequal windows -- a small, plausible, invisible
     // bias in exactly the comparison that picks the holding.
     const optional<JumpToPeriodBoundary> boundary = anchor_boundary(config.rebalance_day, config.lookback_period);
+    const auto anchor_day = minus(past_trading_day, config.lookback_period, boundary);
+    // anchor day might or might not be a trading day. Scan in the proper direction to find the nearest trading day.
     TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-      anchor,
-      resolve_anchor(market_data, all_assets, minus(past_trading_day, config.lookback_period, boundary), boundary)
+      anchor_trading_day,
+      boundary == JumpToPeriodBoundary::first_day ? first_trading_day_on_or_after(market_data, all_assets, anchor_day)
+                                                  : last_trading_day_on_or_before(market_data, all_assets, anchor_day)
     );
 
-    return unexpected(format("to be implemented (anchor for {} would be {})", past_trading_day, anchor));
+    // Compute equity return factors.
+    vector<double> equity_return_factors;
+    equity_return_factors.reserve(config.equities.size());
+    for (const auto& s : config.equities) {
+        TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
+          total_return_factor,
+          market_data.total_equity_return_factor_close_to_close(s, anchor_trading_day, past_trading_day)
+        );
+        equity_return_factors.push_back(total_return_factor);
+    }
+
+    // Compute defensive asset return factor.
+    TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
+      defensive_asset_return_factor,
+      market_data.total_equity_return_factor_close_to_close(
+        config.defensive_asset, anchor_trading_day, past_trading_day
+      )
+    );
+
+    // Compute cache proxy return factor.
+
+    (void)defensive_asset_return_factor;
+
+    return unexpected(format("to be implemented"));
 }
 } // namespace dual_mom_fixed_etf_algorithm

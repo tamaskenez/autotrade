@@ -203,6 +203,7 @@ public:
     {
         as_of = as_of_arg;
     }
+
     void clear_as_of()
     {
         as_of.reset();
@@ -226,6 +227,28 @@ public:
     // payload that will not parse, a download that failed, or a symbol with no
     // history at all.
     expected<DailyBarAvailability, string> daily_bar_availability(string_view symbol, chr::local_days day);
+
+    // Growth of a position in `symbol` held from the close of `from` to the close
+    // of `to`, dividends reinvested and splits undone. 1.0 is flat, 1.05 is +5%.
+    //
+    // The rules are total_return_factor_close_to_close()'s and are documented
+    // there, including the half-open boundary at `from` that lets consecutive
+    // windows chain by multiplication without a dividend being counted twice or
+    // lost between them. Read them there; this only supplies the history.
+    //
+    // Both dates must be days `symbol` actually traded. A date with no bar is an
+    // error rather than a match to the nearest one, because a silently shifted
+    // endpoint yields a plausible number nothing downstream can recognise as
+    // wrong. Resolve the endpoints first -- that is what daily_bar_availability()
+    // is for.
+    //
+    // Unlike the other queries this one does not consult visible(), and does not
+    // need to: `as_of` bounds both endpoints, the window is closed at `to`, and a
+    // bar dated later cannot change a factor computed between two earlier ones.
+    // The guard is enforced on the arguments instead, which is the only place it
+    // can bite here.
+    expected<double, string>
+    total_equity_return_factor_close_to_close(string_view symbol, chr::local_days from, chr::local_days to);
 
 private:
     // One symbol's parsed history, plus what this run has already tried in order

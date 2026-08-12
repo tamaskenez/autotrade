@@ -71,6 +71,58 @@ string tiingo_payload(span<const string_view> dates)
     return format("[{}]", rows);
 }
 
+// A payload with prices that move and corporate actions that land, which the flat
+// one above deliberately does not have: against constant closes and no events, a
+// return factor of 1.0 is indistinguishable from a function that returns 1.0.
+struct Row {
+    string_view date;
+    double close;
+    double div_cash;
+    double split_factor;
+};
+
+// Chosen so the factors are exact and checkable by hand:
+//
+//   01-02 -> 01-03   110/100                     = 1.10
+//   01-02 -> 01-04   121/100                     = 1.21
+//   01-04 -> 01-08   (126 + 5)/121 = 131/121            <- dividend on the ex-date
+//   01-08 -> 01-09   (66 * 2)/126  = 132/126            <- split, and the 01-08
+//                                                          dividend excluded by the
+//                                                          half-open boundary
+//   01-02 -> 01-09   131/100 * 132/126           = 1.372380952...
+constexpr string_view k_tr_symbol = "TR";
+
+constexpr std::array k_tr_rows{
+  Row{"2024-01-02"sv, 100.0, 0.0, 1.0},
+  Row{"2024-01-03"sv, 110.0, 0.0, 1.0},
+  Row{"2024-01-04"sv, 121.0, 0.0, 1.0},
+  // 01-05 to 01-07 absent: the walk must carry an event over a gap.
+  Row{"2024-01-08"sv, 126.0, 5.0, 1.0},
+  Row{"2024-01-09"sv, 66.0,  0.0, 2.0},
+};
+
+string tiingo_payload(span<const Row> rows)
+{
+    string out;
+    for (const auto& r : rows) {
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += format(
+          R"({{"date":"{}T00:00:00.000Z","open":{},"high":{},"low":{},)"
+          R"("close":{},"volume":1000.0,"divCash":{},"splitFactor":{}}})",
+          r.date,
+          r.close,
+          r.close,
+          r.close,
+          r.close,
+          r.div_cash,
+          r.split_factor
+        );
+    }
+    return format("[{}]", out);
+}
+
 class MarketDataTest : public ::testing::Test
 {
 protected:
@@ -84,6 +136,7 @@ protected:
         fs::remove_all(config.workspace_dir, ec);
 
         write_payload(k_symbol, tiingo_payload(k_dates));
+        write_payload(k_tr_symbol, tiingo_payload(k_tr_rows));
     }
 
     void TearDown() override
@@ -301,6 +354,106 @@ TEST_F(MarketDataTest, UnparseablePayloadIsReported)
     const auto got = md.daily_bar_availability("BROKEN", day(2024, 1, 3));
     ASSERT_FALSE(got.has_value());
     EXPECT_NE(got.error().find("BROKEN"), string::npos) << got.error();
+}
+
+// ------------------------------------------------ total return factor
+
+class TotalReturnTest : public MarketDataTest
+{
+protected:
+    double factor(MarketData& md, chr::local_days from, chr::local_days to)
+    {
+        const auto got = md.total_equity_return_factor_close_to_close(k_tr_symbol, from, to);
+        EXPECT_TRUE(got.has_value()) << (got ? string{} : got.error());
+        return got.value_or(std::numeric_limits<double>::quiet_NaN());
+    }
+};
+
+TEST_F(TotalReturnTest, PriceOnlyWindows)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    EXPECT_DOUBLE_EQ(factor(md, day(2024, 1, 2), day(2024, 1, 3)), 110.0 / 100.0);
+    EXPECT_DOUBLE_EQ(factor(md, day(2024, 1, 2), day(2024, 1, 4)), 121.0 / 100.0);
+}
+
+// The dividend is credited on its ex-date, and the window that ends there gets it.
+TEST_F(TotalReturnTest, DividendIsIncludedByTheWindowEndingOnItsExDate)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    EXPECT_DOUBLE_EQ(factor(md, day(2024, 1, 4), day(2024, 1, 8)), 131.0 / 121.0);
+}
+
+// ...and the window *starting* there does not: the entry price is already ex, so
+// the payment belongs to the earlier window. This is what lets adjacent windows
+// chain without double-counting, so it is worth pinning separately.
+TEST_F(TotalReturnTest, DividendIsExcludedByTheWindowStartingOnItsExDate)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    EXPECT_DOUBLE_EQ(factor(md, day(2024, 1, 8), day(2024, 1, 9)), (66.0 * 2.0) / 126.0);
+}
+
+// A 2-for-1 halves the price; undoing it must leave the factor showing the real
+// gain and not a 50% loss.
+TEST_F(TotalReturnTest, SplitIsUndone)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    EXPECT_GT(factor(md, day(2024, 1, 8), day(2024, 1, 9)), 1.0);
+}
+
+// The whole history in one call must equal the product of its parts -- the
+// property the half-open boundary exists to provide.
+TEST_F(TotalReturnTest, AdjacentWindowsChain)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    const double whole = factor(md, day(2024, 1, 2), day(2024, 1, 9));
+    const double parts = factor(md, day(2024, 1, 2), day(2024, 1, 4)) * factor(md, day(2024, 1, 4), day(2024, 1, 8))
+                       * factor(md, day(2024, 1, 8), day(2024, 1, 9));
+
+    EXPECT_DOUBLE_EQ(whole, 131.0 / 100.0 * (132.0 / 126.0));
+    EXPECT_NEAR(whole, parts, 1e-12);
+}
+
+TEST_F(TotalReturnTest, EndpointsMustBeTradingDays)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    // 01-06 is inside the range and has no bar; nearest-match would silently
+    // return a plausible number instead.
+    EXPECT_FALSE(md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 6), day(2024, 1, 9)));
+    EXPECT_FALSE(md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 2), day(2024, 1, 6)));
+    EXPECT_FALSE(md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2023, 12, 1), day(2024, 1, 9)));
+}
+
+TEST_F(TotalReturnTest, WindowMustRunForwards)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 9));
+
+    EXPECT_FALSE(md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 9), day(2024, 1, 2)));
+    EXPECT_FALSE(md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 4), day(2024, 1, 4)));
+}
+
+// The guard applies to both ends, not just the later one.
+using TotalReturnDeathTest = TotalReturnTest;
+
+TEST_F(TotalReturnDeathTest, EitherEndpointPastAsOfTerminates)
+{
+    MarketData md = market_data();
+    md.set_as_of(day(2024, 1, 4));
+
+    EXPECT_DEATH((void)md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 2), day(2024, 1, 9)), "");
+    EXPECT_DEATH((void)md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 8), day(2024, 1, 3)), "");
 }
 
 } // namespace
