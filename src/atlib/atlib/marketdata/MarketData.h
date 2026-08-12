@@ -250,12 +250,32 @@ public:
     expected<double, string>
     total_equity_return_factor_close_to_close(string_view symbol, chr::local_days from, chr::local_days to);
 
+    // Growth of money rolled in the cash proxy over the same window, on the same
+    // scale: the hurdle the equity legs are compared against.
+    //
+    // The arithmetic, the conventions it commits to, and the ~13bp of hurdle that
+    // reading the quote naively would lose, are all in cash_return_factor(); read
+    // them there before comparing the two numbers.
+    //
+    // `symbol` is a FRED series id -- DTB3 for this project. It is a parameter for
+    // the reason rate_history() gives, and an unrecognised series is rejected at
+    // the parse rather than given a default basis, because a wrong basis does not
+    // look wrong.
+    //
+    // Unlike the equity query the dates need not appear in the series: a rate has
+    // no trading calendar and its gaps are bank holidays, so the last quote on or
+    // before a day is the one in force. `from` before the first observation is
+    // still an error -- there is nothing to carry forward.
+    expected<double, string> total_cash_return_factor(string_view symbol, chr::local_days from, chr::local_days to);
+
 private:
     // One symbol's parsed history, plus what this run has already tried in order
-    // to get it.
-    struct CachedEquity {
+    // to get it. Templated because the rules below are the same rules for a price
+    // series and a rate series, and they are the part worth getting right.
+    template<class History>
+    struct Cached {
         // nullopt when nothing was cached on disk and no download has succeeded.
-        optional<EquityHistory> history;
+        optional<History> history;
 
         // Whether a download has been attempted this run, and what came of it.
         //
@@ -279,6 +299,10 @@ private:
     // here; see has_daily_bar() for what it means.
     expected<const EquityHistory*, string> equity(string_view symbol, chr::local_days day);
 
+    // The same, for a FRED rate series. No provider parameter, for the reason
+    // rate_history() gives: there is no second opinion on DTB3 to diff against.
+    expected<const RateHistory*, string> rate(string_view symbol, chr::local_days day);
+
     // The prefix of `bars` that `as_of` allows, which is all of it when no guard
     // is set. The one place any query is allowed to reach the rows.
     span<const DailyBar> visible(const vector<DailyBar>& bars) const;
@@ -290,5 +314,6 @@ private:
 
     // Keyed by symbol, so a run parses each payload once. std::less<> for lookup
     // straight from the string_view the queries take, without a string per call.
-    std::map<string, CachedEquity, std::less<>> equities;
+    std::map<string, Cached<EquityHistory>, std::less<>> equities;
+    std::map<string, Cached<RateHistory>, std::less<>> rates;
 };

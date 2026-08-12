@@ -168,14 +168,38 @@ best cell, and the cause would be the grid, not a bug.
 
 ## 2. Derived series
 
-7. **Cash total-return index from DTB3.** Convert the discount quote to a daily
-   accrual, forward-fill across FRED's holidays (`rate.h`: the gaps carry no
-   information and do not line up with the exchange calendar), and compound over
-   *calendar* days so weekends accrue. This conversion does not exist yet —
-   `rate.h` says so explicitly. Two checks on it: against `DGS3MO`, and against
-   BIL's own total return over 2007→today, where BIL should lag by roughly its
-   expense ratio and by more during the ZIRP years `LOG.md` flagged (2010,
-   2012–15, 2021).
+7. **Cash total-return index from DTB3.** Built, as `cash_return_factor()` in
+   `atlib/marketdata/total_return.h`. The discount quote is converted to what the
+   bill actually earns (`price = 1 − d·91/360`, `yield = d/price`) and accrued at
+   `yield/360` per *calendar* day, forward-filled across FRED's holidays because
+   the gaps are days nobody published, not days money stopped earning. Skipping
+   the basis conversion would understate the hurdle by ~7bp a year at a 5% level,
+   one-directionally, biasing the strategy toward equities.
+
+   **The dominant modelling choice is the roll, not the basis.** The index rolls
+   daily at the spot three-month quote rather than buying a bill and holding it to
+   maturity, which is what published T-bill indices measure. Against those: 2021
+   agrees to a basis point, 2023 runs ~34bp rich, 2007 ~24bp cheap, 2022 ~58bp
+   rich as rates went 0.05% → 4.4%. The error changes sign with the direction of
+   rates and is an order of magnitude larger than the basis correction.
+
+   Kept because it is the only construction that is *windowable* — a real bill
+   roll depends on when its cycle started, so a factor between two arbitrary dates
+   would not be well defined and adjacent windows would not chain, which is what
+   lets the cash leg be compared against the equity legs over identical windows at
+   all. The residual is a hurdle bias of up to ~50bp, in the number the
+   absolute-momentum filter subtracts, where near-ties decide the holding.
+
+   **This is a candidate axis for the robustness grid**, on the same argument as
+   the anchor convention in step 3: swap the DTB3 roll for BIL's own total return
+   over 2007→today and diff the holdings. If the conclusion is insensitive, the
+   choice was never decision-relevant.
+
+   Checks run: BIL lags the index by 14.3bp in 2021 (ZIRP) against a 13.6bp
+   expense ratio, matching what `LOG.md` predicted; 6.4bp in 2019 and 33.8bp in
+   2023, the spread between them being the roll effect rather than anything about
+   BIL. `DGS3MO` remains available as an independent check on the basis
+   conversion, and is not yet wired up.
 8. **Daily total-return chain per instrument.** `total_return_factor_close_to_close()`
    over each consecutive pair of bars, composed multiplicatively. This is the
    mark-to-market series for the equity curve; adjacent windows compose by

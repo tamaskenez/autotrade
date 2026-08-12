@@ -86,3 +86,61 @@ total_return_factor_close_to_close(const EquityHistory& history, chr::local_days
 
     return factor;
 }
+
+namespace
+{
+
+// DTB3 quotes the 13-week bill. The discount basis prices against face over the
+// days actually remaining, so the tenor has to be named to undo it.
+constexpr double k_bill_days = 91.0;
+
+// What one calendar day at `value` earns, as a fraction. See cash_return_factor().
+double daily_rate(RateConvention convention, double value)
+{
+    switch (convention) {
+    case RateConvention::discount_360: {
+        const double d = value / 100.0;
+        const double price = 1.0 - d * k_bill_days / 360.0;
+        // Only reachable at a quote near 400%, which is not a number this series
+        // has ever carried; left as a check rather than an error because a
+        // negative price is a corrupt input, not a market condition.
+        CHECK(price > 0.0);
+        return d / price / 360.0;
+    }
+    }
+    std::unreachable();
+}
+
+} // namespace
+
+expected<double, string> cash_return_factor(const RateHistory& history, chr::local_days from, chr::local_days to)
+{
+    if (from >= to) {
+        return unexpected(format("{}: window does not run forwards: {} to {}", history.symbol, from, to));
+    }
+    if (history.observations.empty()) {
+        return unexpected(format("{}: no observations", history.symbol));
+    }
+
+    // The rate in force on a day is the last one published on or before it, so the
+    // cursor opens just past `from` and the value carried in is the one behind it.
+    auto observation = ra::upper_bound(history.observations, from, {}, &RateObservation::date);
+    if (observation == history.observations.begin()) {
+        return unexpected(format(
+          "{}: no observation on or before {}, earliest is {}", history.symbol, from, history.observations.front().date
+        ));
+    }
+    double current = (observation - 1)->value;
+
+    double factor = 1.0;
+    // Calendar days, and half-open at `from`: the buyer pays at the close of `from`
+    // and earns for each of the (to - from) days that follow.
+    for (auto day = from + chr::days{1}; day <= to; ++day) {
+        for (; observation != history.observations.end() && observation->date <= day; ++observation) {
+            current = observation->value;
+        }
+        factor *= 1.0 + daily_rate(history.convention, current);
+    }
+
+    return factor;
+}

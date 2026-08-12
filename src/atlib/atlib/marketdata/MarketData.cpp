@@ -198,6 +198,64 @@ expected<History, string> load_history(
     return std::move(*history);
 }
 
+// The body of MarketData::equity() and MarketData::rate() both.
+//
+// Same rules as load_history() above -- read the cache, download at most once --
+// and one more that only an in-memory cache needs: remember that the download
+// happened. The documentation is on the members in MarketData.h; comments here
+// explain only the steps.
+template<class History, class Map, class Fetch, class Parse>
+expected<const History*, string> load_into_cache(
+  Map& cache,
+  const MarketDataConfig& config,
+  ProviderInfo provider,
+  string_view symbol,
+  chr::local_days day,
+  Fetch fetch_payload,
+  Parse parse_payload
+)
+{
+    auto entry = cache.find(symbol);
+    if (entry == cache.end()) {
+        if (!is_plain_filename(symbol)) {
+            return unexpected(format("not a usable symbol: \"{}\"", symbol));
+        }
+        auto cached = read_cached<History>(payload_path(config, provider, symbol), symbol, parse_payload);
+        if (!cached) {
+            return unexpected(cached.error());
+        }
+        // Inserted even when there was nothing on disk, so that the download below
+        // is attempted once for this symbol and not once per query.
+        entry = cache.try_emplace(string(symbol)).first;
+        entry->second.history = std::move(*cached);
+    }
+
+    auto& cached = entry->second;
+
+    if (!cached.history || !covers(*cached.history, day)) {
+        if (cached.download_error) {
+            return unexpected(*cached.download_error);
+        }
+        if (!cached.downloaded) {
+            // Marked before the attempt rather than after it, so that a download
+            // that throws or fails cannot be retried by the next query either.
+            cached.downloaded = true;
+            auto downloaded =
+              download_to_cache<History>(payload_path(config, provider, symbol), symbol, fetch_payload, parse_payload);
+            if (!downloaded) {
+                cached.download_error = downloaded.error();
+                return unexpected(*cached.download_error);
+            }
+            cached.history = std::move(*downloaded);
+        }
+    }
+
+    if (!cached.history) {
+        return unexpected(format("{} {}: no data at all", provider.name, symbol));
+    }
+    return &*cached.history;
+}
+
 } // namespace
 
 fs::path cache_path(const MarketDataConfig& config, Provider provider, string_view symbol)
@@ -284,57 +342,24 @@ expected<RateHistory, string> rate_history(const MarketDataConfig& config, strin
 
 expected<const EquityHistory*, string> MarketData::equity(string_view symbol, chr::local_days day)
 {
-    auto entry = equities.find(symbol);
-    if (entry == equities.end()) {
-        if (!is_plain_filename(symbol)) {
-            return unexpected(format("not a usable symbol: \"{}\"", symbol));
-        }
-        auto cached = read_cached<EquityHistory>(
-          payload_path(config, info(provider), symbol), symbol, [this](string_view s, string_view payload) {
-              return parse(provider, s, payload);
-          }
-        );
-        if (!cached) {
-            return unexpected(cached.error());
-        }
-        // Inserted even when there was nothing on disk, so that the download below
-        // is attempted once for this symbol and not once per query.
-        entry = equities.try_emplace(string(symbol)).first;
-        entry->second.history = std::move(*cached);
-    }
+    return load_into_cache<EquityHistory>(
+      equities,
+      config,
+      info(provider),
+      symbol,
+      day,
+      [this](string_view s) {
+          return fetch(provider, s);
+      },
+      [this](string_view s, string_view payload) {
+          return parse(provider, s, payload);
+      }
+    );
+}
 
-    CachedEquity& cache = entry->second;
-
-    if (!cache.history || !covers(*cache.history, day)) {
-        if (cache.download_error) {
-            return unexpected(*cache.download_error);
-        }
-        if (!cache.downloaded) {
-            // Marked before the attempt rather than after it, so that a download
-            // that throws or fails cannot be retried by the next query either.
-            cache.downloaded = true;
-            auto downloaded = download_to_cache<EquityHistory>(
-              payload_path(config, info(provider), symbol),
-              symbol,
-              [this](string_view s) {
-                  return fetch(provider, s);
-              },
-              [this](string_view s, string_view payload) {
-                  return parse(provider, s, payload);
-              }
-            );
-            if (!downloaded) {
-                cache.download_error = downloaded.error();
-                return unexpected(*cache.download_error);
-            }
-            cache.history = std::move(*downloaded);
-        }
-    }
-
-    if (!cache.history) {
-        return unexpected(format("{} {}: no data at all", info(provider).name, symbol));
-    }
-    return &*cache.history;
+expected<const RateHistory*, string> MarketData::rate(string_view symbol, chr::local_days day)
+{
+    return load_into_cache<RateHistory>(rates, config, k_fred, symbol, day, fred::fetch, fred::parse);
 }
 
 span<const DailyBar> MarketData::visible(const vector<DailyBar>& bars) const
@@ -361,6 +386,20 @@ MarketData::total_equity_return_factor_close_to_close(string_view symbol, chr::l
     }
 
     return total_return_factor_close_to_close(**history, from, to);
+}
+
+expected<double, string>
+MarketData::total_cash_return_factor(string_view symbol, chr::local_days from, chr::local_days to)
+{
+    CHECK(!as_of || from <= *as_of);
+    CHECK(!as_of || to <= *as_of);
+
+    const auto history = rate(symbol, to);
+    if (!history) {
+        return unexpected(history.error());
+    }
+
+    return cash_return_factor(**history, from, to);
 }
 
 expected<DailyBarAvailability, string> MarketData::daily_bar_availability(string_view symbol, chr::local_days day)
