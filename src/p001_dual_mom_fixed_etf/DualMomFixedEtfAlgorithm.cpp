@@ -156,6 +156,29 @@ do_all_assets_have_daily_bars(MarketData& market_data, const vector<string>& all
     return bar_avail;
 }
 
+// Everything both entry points need to be true of a Config before either touches
+// any data. Checked in both, because either can be called first and a caller that
+// only ever hits one of them would otherwise never learn the config is unusable.
+expected<void, string> validate(const Config& config)
+{
+    if (config.equities.empty()) {
+        return unexpected("no equities specified");
+    }
+    if (config.defensive_asset.empty()) {
+        return unexpected("no defensive asset specified");
+    }
+    if (config.cash_proxy.empty()) {
+        return unexpected("no cash proxy specified");
+    }
+    // Zero would reach the resize below and return an empty portfolio, which is
+    // neither the equities nor the defensive asset and which a caller cannot tell
+    // from "hold nothing on purpose". Negative would trip sucast()'s assert.
+    if (config.max_portfolio_size < 1) {
+        return unexpected(format("max_portfolio_size is {}, which would select nothing", config.max_portfolio_size));
+    }
+    return {};
+}
+
 // The latest day at or before `day` on which every asset has a bar.
 //
 // Walks back rather than forward so the window it opens covers the whole
@@ -320,8 +343,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_last_trading_da
 expected<variant<chr::local_days, NotARebalanceDay>, string>
 get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& config, chr::local_days past_day)
 {
-    if (config.equities.empty() || config.defensive_asset.empty()) {
-        return unexpected("No equities or defensive asset specified");
+    if (const auto valid = validate(config); !valid) {
+        return unexpected(valid.error());
     }
     vector<string> all_assets = config.equities;
     all_assets.push_back(config.defensive_asset);
@@ -402,15 +425,10 @@ get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& c
     }
 }
 
-expected<Response, string> rebalance(
-  UNUSED MarketData& market_data,
-  const Config& config,
-  UNUSED chr::local_days past_trading_day,
-  UNUSED const Portfolio& portfolio
-)
+expected<Response, string> rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day)
 {
-    if (config.equities.empty() || config.defensive_asset.empty()) {
-        return unexpected("No equities or defensive asset specified");
+    if (const auto valid = validate(config); !valid) {
+        return unexpected(valid.error());
     }
     // All assets must have data on past_trading_day.
     vector<string> all_assets = config.equities;
@@ -440,28 +458,57 @@ expected<Response, string> rebalance(
     );
 
     // Compute equity return factors.
-    vector<double> equity_return_factors;
-    equity_return_factors.reserve(config.equities.size());
+    vector<pair<double, string>> equities_and_return_factors;
+    equities_and_return_factors.reserve(config.equities.size());
     for (const auto& s : config.equities) {
         TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
           total_return_factor,
           market_data.total_equity_return_factor_close_to_close(s, anchor_trading_day, past_trading_day)
         );
-        equity_return_factors.push_back(total_return_factor);
+        equities_and_return_factors.emplace_back(total_return_factor, s);
     }
 
-    // Compute defensive asset return factor.
+    // Compute the cash proxy return factor over the same window.
     TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-      defensive_asset_return_factor,
-      market_data.total_equity_return_factor_close_to_close(
-        config.defensive_asset, anchor_trading_day, past_trading_day
-      )
+      cash_factor, market_data.total_cash_return_factor(config.cash_proxy, anchor_trading_day, past_trading_day)
     );
 
-    // Compute cache proxy return factor.
+    // Absolute momentum, applied per asset rather than to the winner alone. At
+    // max_portfolio_size 1 the two are the same -- if the winner fails the hurdle
+    // nothing else can pass it -- and above 1 this is the generalisation that
+    // keeps every held asset individually above cash. `<=` because "exceeds" is
+    // strict: an equity exactly level with the hurdle does not qualify.
+    const auto removed = ra::remove_if(equities_and_return_factors, [cash_factor](const auto& p) {
+        return p.first <= cash_factor;
+    });
+    equities_and_return_factors.erase(removed.begin(), removed.end());
 
-    (void)defensive_asset_return_factor;
+    if (equities_and_return_factors.empty()) {
+        return Response{.desired_portfolio = {{config.defensive_asset, 1.0}}};
+    }
 
-    return unexpected(format("to be implemented"));
+    // Descending by return factor, and *stable*, so equal factors keep the order
+    // they were listed in `config.equities`.
+    //
+    // Not sort-then-reverse, which is what this was: sorting a pair orders by
+    // symbol after factor, and reversing then flips that too, leaving a tie broken
+    // in reverse alphabetical order. That happened to agree with the documented
+    // "SPY over EFA" only because "SPY" > "EFA" -- rename an asset and the rule
+    // silently inverts. Config order is a tie-break someone chose.
+    ra::stable_sort(equities_and_return_factors, ra::greater{}, &pair<double, string>::first);
+
+    if (cmp_greater(equities_and_return_factors.size(), config.max_portfolio_size)) {
+        equities_and_return_factors.resize(sucast(config.max_portfolio_size));
+    }
+
+    // Equal weight across the survivors, summing to 1.0: there is no residual, and
+    // Response says why.
+    const double weight = 1.0 / ifcast<double>(equities_and_return_factors.size());
+    vector<pair<string, double>> desired_portfolio;
+    desired_portfolio.reserve(equities_and_return_factors.size());
+    for (const auto& [factor, symbol] : equities_and_return_factors) {
+        desired_portfolio.emplace_back(symbol, weight);
+    }
+    return Response{.desired_portfolio = MOVE(desired_portfolio)};
 }
 } // namespace dual_mom_fixed_etf_algorithm

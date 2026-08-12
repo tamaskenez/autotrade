@@ -1,5 +1,6 @@
 #pragma once
-#include "atlib/papertrading/papertrading.h"
+
+#include <meadow/cppext.h>
 
 class MarketData;
 
@@ -15,15 +16,40 @@ enum class RebalanceDay {
 struct Config {
     vector<string> equities;
     string defensive_asset;
+
+    // The hurdle the equity legs have to beat, as a FRED series id -- DTB3 for
+    // this project.
+    //
+    // A parameter rather than a constant so the hurdle can be varied like any
+    // other axis. Note what it cannot express: it names a *rate* series, read
+    // through MarketData::total_cash_return_factor(), so it can be swapped for
+    // another FRED rate but not for an ETF such as BIL, which is priced through
+    // the equity query instead. Comparing against BIL -- the check BACKTEST.md
+    // step 7 wants for the roll bias -- needs this to grow a second alternative,
+    // not just a different string.
+    string cash_proxy;
+
     variant<chr::months, chr::weeks, chr::days> lookback_period;
     RebalanceDay rebalance_day;
+
+    // How many equities may be held at once. 1 is the strategy as written; above
+    // that, the selected assets are held in equal weight.
     int max_portfolio_size = 1;
 };
 
 struct Response {
-    string info;
-    // The response contains the symbols of assets to buy (positive money) or sell (negative money)
-    vector<pair<string, double>> assets_to_buy_or_sell;
+    // What to hold from the next execution onward: each symbol with its share of
+    // total equity. The shares sum to 1.0.
+    //
+    // Weights rather than a bare symbol list, because a list does not say what to
+    // do with the rest of the money. At max_portfolio_size 1 there is no rest and
+    // the two are the same, but above it the question is real: if one of three
+    // equities clears the hurdle, "hold SPY" could mean all of it or a third of
+    // it, and nothing in a `vector<string>` distinguishes them. What this returns
+    // is the first -- the survivors are held in equal weight and there is no
+    // residual -- which is a property of the strategy and not of the type, so it
+    // is stated here rather than left to be inferred from a call site.
+    vector<pair<string, double>> desired_portfolio;
 };
 
 // An ordinary day on which nothing is due -- not a failure. `why` is for logging
@@ -52,6 +78,5 @@ expected<variant<chr::local_days, NotARebalanceDay>, string>
 get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& config, chr::local_days past_day);
 
 // `past_trading_day` must have been a trading day with all the asset's daily bars available.
-expected<Response, string>
-rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day, const Portfolio& portfolio);
+expected<Response, string> rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day);
 } // namespace dual_mom_fixed_etf_algorithm
