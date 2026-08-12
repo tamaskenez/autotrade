@@ -15,7 +15,7 @@ enum class RebalanceDay {
 struct Config {
     vector<string> equities;
     string defensive_asset;
-    int lookback_months;
+    variant<chr::months, chr::weeks, chr::days> lookback_period;
     RebalanceDay rebalance_day;
     int max_portfolio_size = 1;
 };
