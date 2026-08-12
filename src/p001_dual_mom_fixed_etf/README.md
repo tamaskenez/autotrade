@@ -1,3 +1,11 @@
+This document is an excerpt from a conversation with Claude/Fable about a good starting point for an automated stock trading algorithm.
+
+Our actual goal is to produce an automated stock trading algorithm that provides a good mix of returns, variance, drawdown that it can be trusted with at least part of my family's savings. Otherwise, everything in this document can be changed if it serves that goal.
+
+Everything else is a non-goal, including testing the exact algorithm described below.
+
+** THE EXCERPT BEGINS HERE **
+
 ## Strategy: Dual Momentum on a fixed ETF basket
 
 **Economic hypothesis (stated before touching data):** Cross-asset momentum persists over 6–12 month horizons due to investor underreaction and slow institutional capital flows, and a trend filter sidesteps the deepest equity drawdowns because bear markets are typically prolonged rather than instantaneous. This is one of the most robust documented effects across decades and asset classes (Moskowitz/Ooi/Pedersen time-series momentum; Antonacci's dual momentum), which matters — we're testing a known hypothesis, not mining for one.

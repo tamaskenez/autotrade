@@ -26,9 +26,32 @@ struct Response {
     vector<pair<string, double>> assets_to_buy_or_sell;
 };
 
-// It's not error if no daily bars available for the past trading day, caller doesn't need to check if past_trading_day
-// is a trading day or holiday. It's an error if some assets have daily bars while others don't.
-expected<Response, string> execute_after_trading_day(
-  chr::local_days past_trading_day, MarketData& market_data, const Config& config, const Portfolio& portfolio
-);
+// An ordinary day on which nothing is due -- not a failure. `why` is for logging
+// and debugging, and nothing should branch on its text.
+//
+// A type rather than a bare string, because the function below already reports
+// failures as a string: with both spelled `string`, `std::get_if<string>` and
+// `.error()` are equally plausible at a call site, and confusing them silently
+// turns a routine non-rebalance day into an error or an error into a routine day.
+// Neither mistake would fail to compile. This one cannot be made.
+struct NotARebalanceDay {
+    string why;
+};
+
+// This algorithm rebalances the portfolio at certain days during year. Here's how to execute it:
+// - Call get_past_trading_day_to_rebalance_after after each day. It can be called on non-trading days, too. The
+//   important is that it must be called only when you are sure that if `past_day` was a trading day, then all the
+//   data for that day has already been uploaded by the data provider.
+// - If the answer is `chr::local_days`, call `rebalance`, by passing the day as `past_trading_day`. Otherwise it is a
+//   `NotARebalanceDay` carrying the reason, which is for logging and debugging.
+// An error, as opposed to a `NotARebalanceDay`, means something went wrong and not that today is uneventful.
+
+// `past_trading_day` (and days before it which might be queried according to the config.rebalance_day) can't be
+// before the first (historical bar) of any asset.
+expected<variant<chr::local_days, NotARebalanceDay>, string>
+get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& config, chr::local_days past_day);
+
+// `past_trading_day` must have been a trading day with all the asset's daily bars available.
+expected<Response, string>
+rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day, const Portfolio& portfolio);
 } // namespace dual_mom_fixed_etf_algorithm
