@@ -435,3 +435,27 @@ expected<DailyBarAvailability, string> MarketData::daily_bar_availability(string
     const auto bar = ra::lower_bound(bars, day, {}, &DailyBar::date);
     return bar != bars.end() && bar->date == day ? DailyBarAvailability::available : DailyBarAvailability::not_traded;
 }
+
+expected<DailyBar, string> MarketData::daily_bar(string_view symbol, chr::local_days day)
+{
+    // The guard, and the reason it terminates rather than reporting: see MarketData.h.
+    CHECK(!as_of || day <= *as_of);
+
+    const auto history = equity(symbol, day);
+    if (!history) {
+        return unexpected(history.error());
+    }
+
+    const span<const DailyBar> bars = visible((*history)->bars);
+    const auto bar = ra::lower_bound(bars, day, {}, &DailyBar::date);
+    if (bar == bars.end() || bar->date != day) {
+        if (bars.empty()) {
+            return unexpected(format("{}: no bars at or before {}", symbol, day));
+        }
+        // The range rather than a verdict, because it answers all three absences
+        // at once: earlier than the first bar, later than the last, or a day the
+        // exchange was shut between them.
+        return unexpected(format("{}: no bar for {}, have {} to {}", symbol, day, bars.front().date, bars.back().date));
+    }
+    return *bar;
+}

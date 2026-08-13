@@ -1,5 +1,5 @@
 [requires]
-gtest/1.17.0
+gtest/1.18.0
 magic_enum/0.9.8
 abseil/20260526.0
 libcurl/8.21.0

@@ -193,7 +193,7 @@ enum class DailyBarAvailability {
 class MarketData
 {
 public:
-    explicit MarketData(const MarketDataConfig& config_arg, Provider provider_arg)
+    MarketData(const MarketDataConfig& config_arg, Provider provider_arg)
         : config(config_arg)
         , provider(provider_arg)
     {
@@ -227,6 +227,19 @@ public:
     // payload that will not parse, a download that failed, or a symbol with no
     // history at all.
     expected<DailyBarAvailability, string> daily_bar_availability(string_view symbol, chr::local_days day);
+
+    // The bar `symbol` printed on `day`.
+    //
+    // The same guard and the same visible range as daily_bar_availability(), so a
+    // bar dated after `as_of` is not there to be found rather than merely hidden.
+    // The two differ only in what a missing bar means: here it is an error, because
+    // a caller asking for a bar has already concluded that `day` traded, and the
+    // absence contradicts that. The message names the visible range, which is what
+    // says which of the three absences it was.
+    //
+    // A copy comes back rather than a pointer into `bars`, for the reason above:
+    // nothing borrowed can outlive the next set_as_of() or refetch.
+    expected<DailyBar, string> daily_bar(string_view symbol, chr::local_days day);
 
     // Growth of a position in `symbol` held from the close of `from` to the close
     // of `to`, dividends reinvested and splits undone. 1.0 is flat, 1.05 is +5%.
