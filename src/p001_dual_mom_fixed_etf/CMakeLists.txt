@@ -6,3 +6,5 @@ add_executable(p001_dual_mom_fixed_etf ${sources})
 target_link_libraries(p001_dual_mom_fixed_etf PRIVATE
     atlib
 )
+
+target_compile_definitions(p001_dual_mom_fixed_etf PRIVATE WORKSPACE_DIR="${PROJECT_SOURCE_DIR}/_md")

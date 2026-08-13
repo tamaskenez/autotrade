@@ -38,18 +38,7 @@ struct Config {
 };
 
 struct Response {
-    // What to hold from the next execution onward: each symbol with its share of
-    // total equity. The shares sum to 1.0.
-    //
-    // Weights rather than a bare symbol list, because a list does not say what to
-    // do with the rest of the money. At max_portfolio_size 1 there is no rest and
-    // the two are the same, but above it the question is real: if one of three
-    // equities clears the hurdle, "hold SPY" could mean all of it or a third of
-    // it, and nothing in a `vector<string>` distinguishes them. What this returns
-    // is the first -- the survivors are held in equal weight and there is no
-    // residual -- which is a property of the strategy and not of the type, so it
-    // is stated here rather than left to be inferred from a call site.
-    vector<pair<string, double>> desired_portfolio;
+    vector<string> desired_portfolio;
 };
 
 // An ordinary day on which nothing is due -- not a failure. `why` is for logging

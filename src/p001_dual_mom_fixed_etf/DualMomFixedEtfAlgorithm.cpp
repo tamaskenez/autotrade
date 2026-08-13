@@ -484,7 +484,7 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     equities_and_return_factors.erase(removed.begin(), removed.end());
 
     if (equities_and_return_factors.empty()) {
-        return Response{.desired_portfolio = {{config.defensive_asset, 1.0}}};
+        return Response{.desired_portfolio = {{config.defensive_asset}}};
     }
 
     // Descending by return factor, and *stable*, so equal factors keep the order
@@ -501,13 +501,10 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
         equities_and_return_factors.resize(sucast(config.max_portfolio_size));
     }
 
-    // Equal weight across the survivors, summing to 1.0: there is no residual, and
-    // Response says why.
-    const double weight = 1.0 / ifcast<double>(equities_and_return_factors.size());
-    vector<pair<string, double>> desired_portfolio;
+    vector<string> desired_portfolio;
     desired_portfolio.reserve(equities_and_return_factors.size());
-    for (const auto& [factor, symbol] : equities_and_return_factors) {
-        desired_portfolio.emplace_back(symbol, weight);
+    for (const auto& p : equities_and_return_factors) {
+        desired_portfolio.push_back(p.second);
     }
     return Response{.desired_portfolio = MOVE(desired_portfolio)};
 }
