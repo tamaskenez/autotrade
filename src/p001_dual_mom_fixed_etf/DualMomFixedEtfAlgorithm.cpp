@@ -133,10 +133,10 @@ expected<DailyBarAvailability, string>
 do_all_assets_have_daily_bars(MarketData& market_data, const vector<string>& all_assets, chr::local_days day)
 {
     CHECK(!all_assets.empty());
-    TRY_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(bar_avail, market_data.daily_bar_availability(all_assets.front(), day));
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(auto bar_avail, market_data.daily_bar_availability(all_assets.front(), day));
     for (unsigned i = 1; i < all_assets.size(); ++i) {
         const auto& s = all_assets[i];
-        TRY_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(b, market_data.daily_bar_availability(s, day));
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& b, market_data.daily_bar_availability(s, day));
         if (b != bar_avail) {
             if (b != DailyBarAvailability::after_last_bar && bar_avail != DailyBarAvailability::after_last_bar
                 && (b == DailyBarAvailability::before_first_bar || bar_avail == DailyBarAvailability::before_first_bar)) {
@@ -194,7 +194,7 @@ expected<chr::local_days, string>
 last_trading_day_on_or_before(MarketData& market_data, const vector<string>& all_assets, chr::local_days day)
 {
     for (auto d = day;; --d) {
-        TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(avail, do_all_assets_have_daily_bars(market_data, all_assets, d));
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& avail, do_all_assets_have_daily_bars(market_data, all_assets, d));
         switch (avail) {
         case DailyBarAvailability::available:
             return d;
@@ -239,7 +239,7 @@ expected<chr::local_days, string>
 first_trading_day_on_or_after(MarketData& market_data, const vector<string>& all_assets, chr::local_days day)
 {
     for (auto d = day;; ++d) {
-        TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(avail, do_all_assets_have_daily_bars(market_data, all_assets, d));
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& avail, do_all_assets_have_daily_bars(market_data, all_assets, d));
         switch (avail) {
         case DailyBarAvailability::available:
             return d;
@@ -271,7 +271,9 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_past_day_if_fir
         return NotARebalanceDay{format("{} is not a trading day.", past_day)};
     }
     for (chr::local_days day = first_day_of_segment; day < past_day; ++day) {
-        TRY_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(day_avail, do_all_assets_have_daily_bars(market_data, all_assets, day));
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+          const auto& day_avail, do_all_assets_have_daily_bars(market_data, all_assets, day)
+        );
         switch (day_avail) {
         case DailyBarAvailability::available:
             return NotARebalanceDay{format("{} is not a rebalance day, {} was the {}", past_day, day, rebalance_rule)};
@@ -323,8 +325,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_last_trading_da
         }
         CHECK(first_day_of_period < day);
         --day;
-        TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-          day_avail, do_all_assets_have_daily_bars(market_data, all_assets, day)
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+          const auto& day_avail, do_all_assets_have_daily_bars(market_data, all_assets, day)
         );
         switch (day_avail) {
         case DailyBarAvailability::available:
@@ -348,7 +350,9 @@ get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& c
     }
     vector<string> all_assets = config.equities;
     all_assets.push_back(config.defensive_asset);
-    TRY_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_day));
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto& bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_day)
+    );
 
     const auto compute_has_daily_bar = [&]() -> expected<bool, string> {
         switch (bar_avail) {
@@ -361,7 +365,7 @@ get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& c
             return unexpected(format("past_day ({}) is before some asset's first bar.", past_day));
         }
     };
-    TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(has_daily_bar, compute_has_daily_bar());
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& has_daily_bar, compute_has_daily_bar());
 
     // Check if the past_day was a rebalance day.
     switch (config.rebalance_day) {
@@ -433,8 +437,8 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     // All assets must have data on past_trading_day.
     vector<string> all_assets = config.equities;
     all_assets.push_back(config.defensive_asset);
-    TRY_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-      bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_trading_day)
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto& bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_trading_day)
     );
     if (bar_avail != DailyBarAvailability::available) {
         return unexpected(format("past_trading_day ({}) is not a trading day.", past_trading_day));
@@ -451,8 +455,8 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     const optional<JumpToPeriodBoundary> boundary = anchor_boundary(config.rebalance_day, config.lookback_period);
     const auto anchor_day = minus(past_trading_day, config.lookback_period, boundary);
     // anchor day might or might not be a trading day. Scan in the proper direction to find the nearest trading day.
-    TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-      anchor_trading_day,
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto& anchor_trading_day,
       boundary == JumpToPeriodBoundary::first_day ? first_trading_day_on_or_after(market_data, all_assets, anchor_day)
                                                   : last_trading_day_on_or_before(market_data, all_assets, anchor_day)
     );
@@ -461,16 +465,17 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     vector<pair<double, string>> equities_and_return_factors;
     equities_and_return_factors.reserve(config.equities.size());
     for (const auto& s : config.equities) {
-        TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-          total_return_factor,
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+          const auto& total_return_factor,
           market_data.total_equity_return_factor_close_to_close(s, anchor_trading_day, past_trading_day)
         );
         equities_and_return_factors.emplace_back(total_return_factor, s);
     }
 
     // Compute the cash proxy return factor over the same window.
-    TRY_CONST_ASSIGN_OR_RETURN_UNEXPECTED_ERROR(
-      cash_factor, market_data.total_cash_return_factor(config.cash_proxy, anchor_trading_day, past_trading_day)
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto& cash_factor,
+      market_data.total_cash_return_factor(config.cash_proxy, anchor_trading_day, past_trading_day)
     );
 
     // Absolute momentum, applied per asset rather than to the winner alone. At
