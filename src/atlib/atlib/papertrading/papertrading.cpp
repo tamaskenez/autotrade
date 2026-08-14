@@ -299,3 +299,93 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
         assets_to_buy_and_sell.erase(mos.error());
     }
 }
+
+namespace
+{
+// A switch for the reason config() gives above: a case missing from here is a
+// diagnostic rather than a silently wrong price.
+double bar_price(const DailyBar& bar, MarketOrderPriceType price_type)
+{
+    switch (price_type) {
+    case MarketOrderPriceType::open:
+        return bar.open;
+    case MarketOrderPriceType::close:
+        return bar.close;
+    }
+    std::unreachable();
+}
+} // namespace
+
+expected<ApplyMarketOrdersResult, string> apply_market_orders(
+  BrokerCostScheme broker_scheme,
+  MarketData& market_data,
+  chr::local_days trading_day,
+  MarketOrderPriceType price_type,
+  Portfolio portfolio,
+  const vector<MarketOrder>& market_orders
+)
+{
+    auto asset_prices = std::flat_map<string, double>();
+    for (const auto& o : market_orders) {
+        if (asset_prices.contains(o.symbol)) {
+            continue;
+        }
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& bar, market_data.daily_bar(o.symbol, trading_day));
+        asset_prices[o.symbol] = bar_price(bar, price_type);
+    }
+    return apply_market_orders(broker_scheme, std::move(asset_prices), std::move(portfolio), market_orders);
+}
+
+namespace
+{
+// A sell of a whole position arrives as a trade value, and dividing it back by
+// the price it was priced with need not land on the share count exactly -- it
+// can miss in either direction. This much slack, relative to the position,
+// still counts as selling all of it; beyond it the order is asking for shares
+// the portfolio does not have.
+constexpr double k_full_sale_tolerance_factor = 1e-9;
+} // namespace
+
+expected<ApplyMarketOrdersResult, string> apply_market_orders(
+  BrokerCostScheme broker_scheme,
+  std::flat_map<string, double> asset_prices,
+  Portfolio portfolio,
+  const vector<MarketOrder>& market_orders
+)
+{
+    for (const auto& o : market_orders) {
+        if (!isfinite(o.quantity)) {
+            return unexpected(format("Invalid quantity for {}: {}", o.symbol, o.quantity));
+        }
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const double price, asset_price_lookup(asset_prices, o.symbol));
+
+        // Both units reduce to a share count: a cash quantity is the trade value
+        // before commission, so the price divides straight out of it.
+        const double shares = o.unit == MarketOrder::Unit::shares ? o.quantity : o.quantity / price;
+        const double trade_value = abs(shares) * price;
+        if (trade_value < k_min_cash_amount_to_trade) {
+            continue;
+        }
+
+        auto& held = portfolio.equities[o.symbol];
+        if (shares < 0) {
+            const double shares_to_sell = -shares;
+            const double slack = abs(held) * k_full_sale_tolerance_factor;
+            if (shares_to_sell > held + slack) {
+                return unexpected(
+                  format("Order to sell {} shares of {}, but only {} held", shares_to_sell, o.symbol, held)
+                );
+            }
+            portfolio.cash += estimate_net_income_from_selling_equity_by_shares(broker_scheme, shares_to_sell, price);
+            // Within the slack the position is gone, whichever side the division
+            // landed on, and saying so exactly keeps dust of either sign out of the
+            // result -- the next rebalance would otherwise read it as a holding.
+            const double remaining = held - shares_to_sell;
+            held = abs(remaining) <= slack ? 0.0 : remaining;
+        } else {
+            portfolio.cash -= estimate_total_cash_needed_when_buying_equity_for_shares(broker_scheme, shares, price);
+            held += shares;
+        }
+    }
+    return ApplyMarketOrdersResult{.portfolio = std::move(portfolio), .asset_prices = std::move(asset_prices)};
+}

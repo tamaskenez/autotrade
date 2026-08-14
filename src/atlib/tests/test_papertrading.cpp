@@ -1,3 +1,4 @@
+#include <atlib/marketdata/MarketData.h>
 #include <atlib/papertrading/papertrading.h>
 
 #include <gtest/gtest.h>
@@ -367,6 +368,340 @@ TEST_F(PortfolioChangeTest, ScalingSolveIsExactAcrossTheSamplingWindow)
     EXPECT_GE(worst_cash, -k_min_cash_amount_to_trade)
       << "worst at B = " << worst_b_shares << " shares, where the orders spend " << -worst_cash
       << " more than the portfolio has";
+}
+
+// ------------------------------------------------------- apply_market_orders()
+
+// A holding absent from one portfolio and zero in the other is the same holding.
+// fill() drops a position it has closed and apply_market_orders() leaves it at
+// zero, and which of the two is the nicer representation is not what any test
+// below is about.
+double shares_of(const Portfolio& portfolio, const string& symbol)
+{
+    const auto it = portfolio.equities.find(symbol);
+    return it == portfolio.equities.end() ? 0.0 : it->second;
+}
+
+// fill() above and apply_market_orders() are the same arithmetic written twice,
+// and that is deliberate rather than an oversight to be tidied away: fill() is
+// what every test in this file states its invariant in terms of, so if it were a
+// call to the function under test instead, a mistake shared by the two would
+// cancel and nothing here would report it.
+//
+// This is the one place they are held against each other, which is what lets the
+// rest stay independent -- and what lets everything asserted above about fill()
+// be read as a statement about the fill that actually runs.
+TEST_F(PortfolioChangeTest, ApplyingGeneratedOrdersMatchesTheReferenceFill)
+{
+    constexpr auto broker_scheme = BrokerCostScheme::flat_20bp;
+    prices = {
+      {"OLD", 100.0},
+      {"A",   100.0},
+      {"B",   25.0 },
+      {"C",   7.0  }
+    };
+
+    const auto before = Portfolio{
+      .cash = 5'000.0, .equities = {{"OLD", 1'000.0}, {"A", 300.0}}
+    };
+    const auto os = orders(broker_scheme, before, {"A", "B", "C"});
+    ASSERT_TRUE(os.has_value()) << os.error();
+
+    const auto applied = apply_market_orders(broker_scheme, prices, before, *os);
+    ASSERT_TRUE(applied.has_value()) << applied.error();
+
+    const auto reference = fill(before, *os, broker_scheme);
+    EXPECT_NEAR(applied->portfolio.cash, reference.cash, 1e-9) << describe(*os);
+    for (const auto& symbol : prices.keys()) {
+        EXPECT_NEAR(shares_of(applied->portfolio, symbol), shares_of(reference, symbol), 1e-9) << symbol;
+    }
+
+    // And so the round trip asserted of fill() above holds of the real fill too.
+    EXPECT_NEAR(applied->portfolio.cash, 0.0, 2 * k_min_cash_amount_to_trade) << describe(*os);
+    EXPECT_EQ(shares_of(applied->portfolio, "OLD"), 0.0);
+}
+
+class ApplyOrdersTest : public PortfolioChangeTest
+{
+protected:
+    expected<ApplyMarketOrdersResult, string>
+    apply(BrokerCostScheme scheme, const Portfolio& before, const vector<MarketOrder>& os) const
+    {
+        return apply_market_orders(scheme, prices, before, os);
+    }
+};
+
+// The same minimum the rebalancer applies to the sells it declines to emit, so a
+// round trip through the two agrees about which orders are too small to place.
+// Skipped, not filled and not refused: an order this size is a no-op, not a bug.
+TEST_F(ApplyOrdersTest, UndersizedOrderIsSkipped)
+{
+    prices = {
+      {"A", 100.0}
+    };
+
+    const auto before = Portfolio{.cash = 1'000.0, .equities = {{"A", 10.0}}};
+    const auto applied = apply(
+      BrokerCostScheme::flat_20bp,
+      before,
+      {
+        {.symbol = "A", .unit = MarketOrder::Unit::cash,   .quantity = 0.5   },
+        {.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = 0.0001}
+    }
+    );
+    ASSERT_TRUE(applied.has_value()) << applied.error();
+
+    EXPECT_EQ(applied->portfolio.cash, before.cash);
+    EXPECT_EQ(applied->portfolio.equities.at("A"), before.equities.at("A"));
+}
+
+// Selling more than is held is a short position arrived at by accident, and
+// nothing downstream models one. The valid buy ahead of it in the list is what
+// makes the point: a rejected order abandons the whole call rather than leaving
+// the caller a half-filled portfolio.
+TEST_F(ApplyOrdersTest, OversellIsRejected)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 100.0}
+    };
+
+    const auto before = Portfolio{.cash = 0.0, .equities = {{"A", 10.0}}};
+    const auto applied = apply(
+      BrokerCostScheme::flat_20bp,
+      before,
+      {
+        {.symbol = "B", .unit = MarketOrder::Unit::shares, .quantity = 5.0  },
+        {.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = -11.0}
+    }
+    );
+    ASSERT_FALSE(applied.has_value());
+    EXPECT_NE(applied.error().find("A"), string::npos) << applied.error();
+}
+
+TEST_F(ApplyOrdersTest, ShortOfAnUnheldSymbolIsRejected)
+{
+    prices = {
+      {"A", 100.0}
+    };
+
+    const auto applied = apply(
+      BrokerCostScheme::flat_20bp,
+      Portfolio{
+        .cash = 1'000.0
+    },
+      {{.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = -1.0}}
+    );
+    EXPECT_FALSE(applied.has_value());
+}
+
+// A sale of a whole position arrives as a trade value, and dividing it back by the
+// price it was priced with need not land on the share count exactly. Both prices
+// below are chosen because they do not, and because they miss in opposite
+// directions: 2300.0 / 2.3 comes out a hair above 1000 shares and 1100.0 / 1.1 a
+// hair below. A price like 3.0 would prove nothing here -- 3000.0 / 3.0 is exact.
+//
+// Two things have to hold. The overshoot must not read as an oversell, because the
+// portfolio does have the shares and only the division says otherwise. And what is
+// left must be exactly zero on both sides, rather than dust of either sign that the
+// next rebalance would read as a position still open.
+TEST_F(ApplyOrdersTest, WholePositionSoldAsCashLandsAtExactlyZero)
+{
+    for (const auto [price, trade_value] : {
+           pair{2.3, 2'300.0},
+           pair{1.1, 1'100.0}
+    }) {
+        prices = {
+          {"A", price}
+        };
+
+        const auto applied = apply(
+          BrokerCostScheme::flat_20bp,
+          Portfolio{
+            .cash = 0.0, .equities = {{"A", 1'000.0}}
+        },
+          {{.symbol = "A", .unit = MarketOrder::Unit::cash, .quantity = -trade_value}}
+        );
+        ASSERT_TRUE(applied.has_value()) << applied.error() << " at price " << price;
+        EXPECT_EQ(applied->portfolio.equities.at("A"), 0.0) << "at price " << price;
+    }
+}
+
+// The other half of the pair above: an overdraft is allowed through, because a
+// backtest wants to see the balance it ended up with rather than an error where a
+// number should be.
+TEST_F(ApplyOrdersTest, CashMayGoNegative)
+{
+    prices = {
+      {"A", 100.0}
+    };
+
+    const auto applied = apply(
+      BrokerCostScheme::flat_20bp,
+      Portfolio{
+        .cash = 100.0
+    },
+      {{.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = 50.0}}
+    );
+    ASSERT_TRUE(applied.has_value()) << applied.error();
+    EXPECT_LT(applied->portfolio.cash, 0.0);
+    EXPECT_EQ(applied->portfolio.equities.at("A"), 50.0);
+}
+
+// A price map that cannot answer for an order is reported rather than asserted on.
+// A zero or negative price matters as much as a missing one: it reaches the
+// estimators, whose CHECKs would take the process down over what is really a bad
+// argument.
+TEST_F(ApplyOrdersTest, UnusablePriceIsReported)
+{
+    const vector<MarketOrder> os{
+      {.symbol = "A", .unit = MarketOrder::Unit::cash, .quantity = 1'000.0}
+    };
+
+    for (const auto& unusable :
+         {std::flat_map<string, double>{},
+          std::flat_map<string, double>{{"A", 0.0}},
+          std::flat_map<string, double>{{"A", -5.0}}}) {
+        prices = unusable;
+        EXPECT_FALSE(apply(BrokerCostScheme::flat_20bp, Portfolio{.cash = 10'000.0}, os).has_value());
+    }
+}
+
+TEST_F(ApplyOrdersTest, NonFiniteQuantityIsReported)
+{
+    prices = {
+      {"A", 10.0}
+    };
+
+    const auto applied = apply(
+      BrokerCostScheme::flat_20bp,
+      Portfolio{
+        .cash = 10'000.0
+    },
+      {{.symbol = "A", .unit = MarketOrder::Unit::cash, .quantity = std::numeric_limits<double>::quiet_NaN()}}
+    );
+    EXPECT_FALSE(applied.has_value());
+}
+
+// Orders are applied in the order given rather than netted first, so several on
+// one symbol compound -- and each leg pays its own commission, which is the whole
+// reason the distinction is worth pinning.
+TEST_F(ApplyOrdersTest, OrdersOnOneSymbolCompound)
+{
+    constexpr auto broker_scheme = BrokerCostScheme::flat_20bp;
+    prices = {
+      {"A", 10.0}
+    };
+
+    const auto before = Portfolio{.cash = 10'000.0};
+    const auto applied = apply(
+      broker_scheme,
+      before,
+      {
+        {.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = 100.0},
+        {.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = 50.0 },
+        {.symbol = "A", .unit = MarketOrder::Unit::shares, .quantity = -30.0}
+    }
+    );
+    ASSERT_TRUE(applied.has_value()) << applied.error();
+
+    EXPECT_NEAR(applied->portfolio.equities.at("A"), 120.0, 1e-12);
+    const double paid = estimate_total_cash_needed_when_buying_equity_for_shares(broker_scheme, 150.0, 10.0);
+    const double received = estimate_net_income_from_selling_equity_by_shares(broker_scheme, 30.0, 10.0);
+    EXPECT_NEAR(applied->portfolio.cash, before.cash - paid + received, 1e-9);
+}
+
+// ------------------------------------------- apply_market_orders() over MarketData
+//
+// Hermetic for the reasons test_MarketData.cpp gives at length: the test writes
+// its own payload into a temporary workspace, because a miss against the real
+// cache would not fail but *download*, and the suite would then depend on a
+// credential and the network.
+//
+// The two bars are 01-02 and 01-04, so 01-03 is a gap inside the covered range.
+// That matters: a date past the last bar would send MarketData to the network
+// looking for one, while a hole in the middle is answered from what is already
+// there.
+class ApplyOverMarketDataTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        const auto* const test = ::testing::UnitTest::GetInstance()->current_test_info();
+        config.workspace_dir =
+          fs::temp_directory_path() / format("atlib_{}_{}_{}", test->test_suite_name(), test->name(), getpid());
+
+        std::error_code ec;
+        fs::remove_all(config.workspace_dir, ec);
+
+        // Open and close deliberately far apart, so which leg was read is visible.
+        ASSERT_TRUE(write_cache(
+                      cache_path(config, Provider::tiingo, k_symbol),
+                      R"([{"date":"2024-01-02T00:00:00.000Z","open":20.0,"high":60.0,"low":10.0,)"
+                      R"("close":50.0,"volume":1000.0,"divCash":0.0,"splitFactor":1.0},)"
+                      R"({"date":"2024-01-04T00:00:00.000Z","open":21.0,"high":61.0,"low":11.0,)"
+                      R"("close":51.0,"volume":1000.0,"divCash":0.0,"splitFactor":1.0}])"
+        )
+                      .has_value());
+    }
+
+    void TearDown() override
+    {
+        std::error_code ec;
+        fs::remove_all(config.workspace_dir, ec);
+    }
+
+    static chr::local_days day(int y, unsigned m, unsigned d)
+    {
+        return chr::local_days(chr::year_month_day(chr::year(y), chr::month(m), chr::day(d)));
+    }
+
+    static constexpr string_view k_symbol = "X";
+
+    MarketDataConfig config;
+};
+
+TEST_F(ApplyOverMarketDataTest, PicksTheRequestedLegOfTheBar)
+{
+    constexpr auto broker_scheme = BrokerCostScheme::flat_20bp;
+    const auto before = Portfolio{.cash = 10'000.0};
+    const vector<MarketOrder> os{
+      {.symbol = string{k_symbol}, .unit = MarketOrder::Unit::shares, .quantity = 100.0}
+    };
+
+    for (const auto [price_type, expected_price] : {
+           pair{MarketOrderPriceType::open,  20.0},
+           pair{MarketOrderPriceType::close, 50.0}
+    }) {
+        auto market_data = MarketData(config, Provider::tiingo);
+        const auto applied = apply_market_orders(broker_scheme, market_data, day(2024, 1, 2), price_type, before, os);
+        ASSERT_TRUE(applied.has_value()) << applied.error();
+
+        // The price it reports having filled at, and the money it actually moved,
+        // have to be the same story.
+        EXPECT_EQ(applied->asset_prices.at(string{k_symbol}), expected_price);
+        const double paid =
+          estimate_total_cash_needed_when_buying_equity_for_shares(broker_scheme, 100.0, expected_price);
+        EXPECT_NEAR(applied->portfolio.cash, before.cash - paid, 1e-9);
+    }
+}
+
+// A day the symbol did not trade is MarketData's error to report, and this only
+// has to not swallow it.
+TEST_F(ApplyOverMarketDataTest, MissingBarIsReported)
+{
+    auto market_data = MarketData(config, Provider::tiingo);
+    const auto applied = apply_market_orders(
+      BrokerCostScheme::flat_20bp,
+      market_data,
+      day(2024, 1, 3),
+      MarketOrderPriceType::close,
+      Portfolio{
+        .cash = 10'000.0
+    },
+      {{.symbol = string{k_symbol}, .unit = MarketOrder::Unit::shares, .quantity = 100.0}}
+    );
+    EXPECT_FALSE(applied.has_value());
 }
 
 } // namespace

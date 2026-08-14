@@ -88,3 +88,46 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   const Portfolio& current_portfolio,
   const vector<string>& desired_portfolio
 );
+
+struct ApplyMarketOrdersResult {
+    Portfolio portfolio;
+
+    // The prices the orders were filled at, for the symbols the orders name. Not a
+    // valuation of the portfolio: a holding no order touched has no entry here.
+    std::flat_map<string, double> asset_prices;
+};
+
+enum class MarketOrderPriceType {
+    open,
+    close
+};
+
+// Fetch the daily bar, pick the request prices and call the second signature.
+expected<ApplyMarketOrdersResult, string> apply_market_orders(
+  BrokerCostScheme broker_scheme,
+  MarketData& market_data,
+  chr::local_days trading_day,
+  MarketOrderPriceType price_type,
+  Portfolio portfolio,
+  const vector<MarketOrder>& market_orders
+);
+
+// Fill the specified market orders on the prices, using the estimate* functions above to calculate total prices which
+// include commissions/fees.
+//
+// An order whose trade value is below k_min_cash_amount_to_trade is skipped rather than filled, which is the same
+// answer market_orders_from_portfolio_change gives to the sells it declines to emit: a round trip through the two
+// agrees about which orders are too small to be worth placing.
+//
+// Selling more shares than the portfolio holds is an error, because it is a short position arrived at by accident and
+// nothing downstream models one. Overdrawing cash is not: the resulting Portfolio may carry a negative balance, and
+// noticing that is the caller's job.
+//
+// Orders are applied in the order given, so several touching one symbol compound. Nothing is filled when the call
+// fails -- the portfolio comes in by value and a rejected order discards the whole copy.
+expected<ApplyMarketOrdersResult, string> apply_market_orders(
+  BrokerCostScheme broker_scheme,
+  std::flat_map<string, double> asset_prices,
+  Portfolio portfolio,
+  const vector<MarketOrder>& market_orders
+);
