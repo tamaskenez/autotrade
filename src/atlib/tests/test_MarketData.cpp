@@ -2,8 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <unistd.h>
-
 using namespace std::literals;
 
 // Hermetic by construction: every test writes its own payload into a temporary

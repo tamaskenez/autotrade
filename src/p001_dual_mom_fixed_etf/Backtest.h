@@ -1,7 +1,11 @@
+#pragma once
+
 #include "DualMomFixedEtfAlgorithm.h"
 #include "atlib/marketdata/MarketData.h"
+#include "atlib/papertrading/papertrading.h"
 
 struct BacktestConfig {
+    BrokerCostScheme broker_cost_scheme;
     Provider provider;
     chr::year_month_day start_date, end_date; // inclusive
 
