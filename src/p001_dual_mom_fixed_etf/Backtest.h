@@ -13,6 +13,9 @@ struct BacktestConfig {
 };
 
 struct BacktestResult {
+    vector<chr::local_days> local_days;
+    vector<double> cash, total;
+    std::flat_map<string, vector<double>> equities;
 };
 
-expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, dual_mom_fixed_etf_algorithm::Config ac);
+expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac);

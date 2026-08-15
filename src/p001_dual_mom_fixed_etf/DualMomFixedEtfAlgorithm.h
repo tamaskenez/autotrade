@@ -61,6 +61,19 @@ struct NotARebalanceDay {
 //   `NotARebalanceDay` carrying the reason, which is for logging and debugging.
 // An error, as opposed to a `NotARebalanceDay`, means something went wrong and not that today is uneventful.
 
+// Issue to solve for actual live trading:
+// - pending orders are filled at next day's open's prices (unknown in advance) which makes it impossible to size them
+//   precisely. It results in either unspent cash or negative cash (which is rejected in live trading if there's no
+//   surplus cash on the account).
+// - Certain assets (IEF, SPY, EFA) can't be bought as an ordinary, non-US citizen
+// - Replacement assets are traded on EU exchanges which have different opening times, not sure if that's a problem
+
+// Potential extensions for the original algorithm:
+// - More assets, holding more than 1
+// - Continuous trading which makes it possible to trade at signal prices, react more quickly. Need a cooldown period
+//   to prevent too frequent trading.
+// - Estimate costs and gains from a rebalance and act accordingly.
+
 // `past_trading_day` (and days before it which might be queried according to the config.rebalance_day) can't be
 // before the first (historical bar) of any asset.
 expected<variant<chr::local_days, NotARebalanceDay>, string>

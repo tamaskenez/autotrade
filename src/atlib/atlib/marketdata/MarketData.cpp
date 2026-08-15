@@ -459,3 +459,30 @@ expected<DailyBar, string> MarketData::daily_bar(string_view symbol, chr::local_
     }
     return *bar;
 }
+
+expected<CorporateActions, string> MarketData::corporate_actions(string_view symbol, chr::local_days day)
+{
+    // The guard, and the reason it terminates rather than reporting: see MarketData.h.
+    // It is also what makes reading the rows directly safe here -- an event dated
+    // exactly `day` is at or before `as_of` by construction.
+    CHECK(!as_of || day <= *as_of);
+
+    const auto history = equity(symbol, day);
+    if (!history) {
+        return unexpected(history.error());
+    }
+
+    // Ranges rather than a single match, though tiingo.cpp guarantees at most one
+    // of each per date -- it rejects a payload whose rows are not strictly
+    // ascending. Composing costs nothing and is the answer that stays right for a
+    // provider that reports a date twice, where picking one would lose half an
+    // event without saying so.
+    CorporateActions actions;
+    for (const auto& split : ra::equal_range((*history)->splits, day, {}, &Split::ex_date)) {
+        actions.split_factor *= split.factor;
+    }
+    for (const auto& distribution : ra::equal_range((*history)->distributions, day, {}, &Distribution::ex_date)) {
+        actions.distribution_amount += distribution.amount;
+    }
+    return actions;
+}

@@ -4,6 +4,20 @@
 
 #include <meadow/math.h>
 
+void Portfolio::clear_below(double eps)
+{
+    if (equal_epsilon(cash, 0.0, eps)) {
+        cash = 0;
+    }
+    for (auto it = equities.begin(); it != equities.end();) {
+        if (equal_epsilon(it->second, 0.0, eps)) {
+            it = equities.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 namespace
 {
 struct BrokerCostConfig {

@@ -164,6 +164,26 @@ enum class DailyBarAvailability {
     after_last_bar,
 };
 
+// The corporate actions an instrument went ex on one date, composed.
+//
+// Two numbers rather than the vendor's rows, because that is what a holder does
+// with them: a share count gets multiplied by one and a cash balance credited
+// from the other. The empty answer is the identity -- 1.0 and 0.0 leave a
+// portfolio untouched -- so a caller may apply the result unconditionally and be
+// right on the overwhelming majority of days, which have no event at all.
+struct CorporateActions {
+    // 2.0 for a 2-for-1, 0.1 for a 1-for-10 reverse. The product of every split
+    // dated that day; see Split for why one double rather than a ratio.
+    double split_factor = 1.0;
+
+    // Cash per share -- per *post-split* share when both land on the same date.
+    // The vendor reports the two on one row, so the amount is quoted in the same
+    // units as that row's close: a holder splits the position first and is paid
+    // on the new share count. Same order, for the same reason, as
+    // total_return_factor_close_to_close() applies them in.
+    double distribution_amount = 0.0;
+};
+
 // The MarketData provides
 // - queries about time series
 // - an "as_of" guard for simulating that data after a certain date is not available yet, for backtesting
@@ -240,6 +260,33 @@ public:
     // A copy comes back rather than a pointer into `bars`, for the reason above:
     // nothing borrowed can outlive the next set_as_of() or refetch.
     expected<DailyBar, string> daily_bar(string_view symbol, chr::local_days day);
+
+    // What `symbol` went ex on `day`, composed into the two numbers a holder
+    // applies to a position.
+    //
+    // Exactly `day`, rather than everything since the previous bar as
+    // total_return_factor_close_to_close() accumulates. The two differ because
+    // their callers step differently: that function walks trading days and would
+    // step over an ex-date that is not one, so it has to sweep up; a caller here
+    // is expected to walk calendar days and so meets every date exactly once.
+    // Driving this from trading days instead would silently drop an event dated
+    // on a day the exchange was shut.
+    //
+    // No visible() call, and none is wanted: the match is on equality and the
+    // guard already holds `day <= as_of`, so every row this can reach is a row
+    // the caller was entitled to see. The bar queries need the visible range
+    // because they answer questions about where the history *ends*, which is
+    // what `as_of` moves; this one asks whether a particular date is in a set.
+    //
+    // A `day` the history does not reach answers "no events" rather than
+    // failing, for the reason `after_last_bar` is not an error: from here, a date
+    // with no event and a date not yet published are the same absence, and a
+    // caller that must tell them apart has daily_bar_availability() for it.
+    //
+    // An error means a data problem and only that: an unusable symbol, a cached
+    // payload that will not parse, a download that failed, or a symbol with no
+    // history at all.
+    expected<CorporateActions, string> corporate_actions(string_view symbol, chr::local_days day);
 
     // Growth of a position in `symbol` held from the close of `from` to the close
     // of `to`, dividends reinvested and splits undone. 1.0 is flat, 1.05 is +5%.
@@ -318,7 +365,7 @@ private:
 
     // The prefix of `bars` that `as_of` allows, which is all of it when no guard
     // is set. The one place any query is allowed to reach the rows.
-    span<const DailyBar> visible(const vector<DailyBar>& bars) const;
+    NODIS span<const DailyBar> visible(const vector<DailyBar>& bars) const;
 
     MarketDataConfig config;
     Provider provider;
