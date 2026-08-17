@@ -68,3 +68,25 @@ NODIS double BacktestReport::sharpe_through_rebalance_days(SharpeAggregation agg
       asset_return_factor, cash_proxy_return_factor, periods_per_year, SharpeInputType::return_factor, aggregation
     );
 }
+
+optional<double> BacktestReport::worst_12_month_return() const
+{
+    size_t j = 0;
+    const auto N = local_days.size();
+    optional<double> worst_return;
+    for (size_t i = 0; i < N; ++i) {
+        const auto di = local_days[i];
+        while (j < N && !is_on_or_later_than_next_year_same_date(di, local_days[j])) {
+            ++j;
+        }
+        if (j >= N) {
+            break;
+        }
+        const auto dj = local_days[j];
+        const auto years = years_between_days(di, dj);
+        const auto return_factor = total[j] / total[i];
+        const auto return_ = pow(return_factor, 1.0 / years) - 1;
+        worst_return = worst_return ? std::min(*worst_return, return_) : return_;
+    }
+    return worst_return;
+}

@@ -111,6 +111,10 @@ int main()
         println("| Sharpe rebal. | {:>10.2f} | {:>9.2f} |", sh_ma, sh_mg);
         println("+---------------+------------+-----------+");
     }
+    // Worst rolling 12-month:
+    if (const auto worst_return = result->worst_12_month_return()) {
+        println("Worst 12-month return: {:.2f}%", 100 * *worst_return);
+    }
 
     return 0;
 }

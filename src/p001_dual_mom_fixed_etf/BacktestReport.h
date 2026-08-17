@@ -20,4 +20,5 @@ struct BacktestReport {
     NODIS double sharpe_daily(SharpeAggregation aggregation) const;
 
     NODIS double sharpe_through_rebalance_days(SharpeAggregation aggregation) const;
+    NODIS optional<double> worst_12_month_return() const;
 };
