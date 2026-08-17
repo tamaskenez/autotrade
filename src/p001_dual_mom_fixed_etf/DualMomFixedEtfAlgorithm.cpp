@@ -343,7 +343,7 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_last_trading_da
 } // namespace
 
 expected<variant<chr::local_days, NotARebalanceDay>, string>
-get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& config, chr::local_days past_day)
+get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, chr::local_days past_day)
 {
     if (const auto valid = validate(config); !valid) {
         return unexpected(valid.error());
@@ -427,6 +427,7 @@ get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& c
         );
     }
     }
+    std::unreachable();
 }
 
 expected<Response, string> rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day)

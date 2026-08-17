@@ -39,21 +39,71 @@ expected<bool, string> is_trading_day(MarketData& market_data, chr::local_days d
     }
     return num_available > 0;
 }
+
+expected<chr::local_days, string>
+first_trading_day_of_month(MarketData& market_data, chr::year_month month, const vector<string>& all_assets)
+{
+    using namespace std::chrono_literals;
+    const auto end_day = chr::local_days((month + chr::months(1)) / 1d);
+    market_data.clear_as_of();
+    for (auto day = chr::local_days(month / 1d); day < end_day; ++day) {
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const bool trading_day, is_trading_day(market_data, day, all_assets));
+        if (trading_day) {
+            return day;
+        }
+    }
+    return unexpected(format("Couldn't find a trading day in the month {}.", month));
+}
+
+expected<chr::local_days, string> first_rebalance_day_of_month(
+  MarketData& market_data, chr::year_month month, const dual_mom_fixed_etf_algorithm::Config& ac
+)
+{
+    using namespace std::chrono_literals;
+    const auto begin_day = chr::local_days(month / 1d);
+    const auto end_day = chr::local_days((month + chr::months(1)) / 1d);
+    market_data.clear_as_of();
+    for (auto day = begin_day; day < end_day; ++day) {
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+          const auto& maybe_rebalance_day,
+          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(market_data, ac, day)
+        );
+        if (auto rebalance_day = switch_variant(
+              maybe_rebalance_day,
+              [&](chr::local_days d) -> optional<chr::local_days> {
+                  return in_co_range(d, begin_day, end_day) ? optional(d) : nullopt;
+              },
+              [](dual_mom_fixed_etf_algorithm::NotARebalanceDay) -> optional<chr::local_days> {
+                  return nullopt;
+              }
+            )) {
+            return *rebalance_day;
+        }
+    }
+    return unexpected(format("Couldn't find a rebalance day in the month {}.", month));
+}
 } // namespace
 
-expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac)
+expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac)
 {
     constexpr auto k_initial_cash = 100000.0;
     const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
     auto market_data = MarketData(mdcfg, bc.provider);
 
-    const auto end_date = chr::local_days(bc.end_date);
+    vector<string> all_assets = ac.equities;
+    all_assets.push_back(ac.defensive_asset);
+
+    CHECK(bc.start_month < bc.end_month);
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto start_date, first_rebalance_day_of_month(market_data, bc.start_month, ac)
+    );
+    TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+      const auto end_date, first_trading_day_of_month(market_data, bc.end_month, all_assets)
+    );
     vector<string> previous_desired_portfolio;
     auto portfolio = Portfolio{.cash = k_initial_cash};
     optional<vector<MarketOrder>> pending_market_orders;
-    BacktestResult report;
-    vector<string> all_assets = ac.equities;
-    all_assets.push_back(ac.defensive_asset);
+    BacktestReport report;
     // The loop variable is called `past_trading_day` because it assumes that we have access to this day's data. So if
     // this day is a rebalance day, we can do it using this day's close prices.
     // However, different sections of the loop are to be interpreted as being executed at different times during the
@@ -63,9 +113,28 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
     // 3: filling pending orders with today's opening prices
     // 4: rebalancing (in real life: after exchange closes and all data is uploaded by the provider and before next
     // day's opening
-    for (auto past_trading_day = chr::local_days(bc.start_date); past_trading_day <= end_date; ++past_trading_day) {
-        market_data.set_as_of(past_trading_day);
-
+    const auto report_this_trading_day =
+      [&report, &portfolio, &market_data](chr::local_days past_trading_day) -> expected<void, string> {
+        // Report.
+        const auto ix = report.local_days.size();
+        report.local_days.push_back(past_trading_day);
+        report.cash.push_back(portfolio.cash);
+        double total = portfolio.cash;
+        for (auto&& [symbol, shares] : portfolio.equities) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& bar, market_data.daily_bar(symbol, past_trading_day));
+            const auto q = shares * bar.close;
+            auto& es = report.equities[symbol];
+            if (es.size() <= ix) {
+                es.resize(ix + 1);
+            }
+            es[ix] = q;
+            total += q;
+        }
+        report.total.push_back(total);
+        return {};
+    };
+    const auto apply_corporate_actions =
+      [&portfolio, &market_data, &pending_market_orders](chr::local_days past_trading_day) -> expected<void, string> {
         // Apply corporate actions, both on portfolio and pending orders.
         for (auto&& [symbol, shares] : portfolio.equities) {
             TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& ca, market_data.corporate_actions(symbol, past_trading_day));
@@ -89,7 +158,13 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
                 }
             }
         }
+        return {};
+    };
 
+    for (auto past_trading_day = start_date; past_trading_day <= end_date; ++past_trading_day) {
+        market_data.set_as_of(past_trading_day);
+
+        TRY_OR_RETURN_UNEXPECTED(apply_corporate_actions(past_trading_day));
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           const bool trading_day, is_trading_day(market_data, past_trading_day, all_assets)
         );
@@ -107,32 +182,17 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
                     *pending_market_orders
                   )
                 );
+                report.num_market_orders += uscast(pending_market_orders->size());
                 pending_market_orders.reset();
                 portfolio = response.portfolio;
                 portfolio.clear_below(1e-6);
-                println("New portfolio: cash: {}", portfolio.cash);
+                println("Portfolio after rebalance:");
                 for (auto&& [symbol, q] : portfolio.equities) {
                     println("- {}: {:.3f} shares", symbol, q);
                 }
+                println("- cash: {}", portfolio.cash);
             }
-            if (!portfolio.equities.empty()) {
-                // Report.
-                const auto ix = report.local_days.size();
-                report.local_days.push_back(past_trading_day);
-                report.cash.push_back(portfolio.cash);
-                double total = portfolio.cash;
-                for (auto&& [symbol, shares] : portfolio.equities) {
-                    TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& bar, market_data.daily_bar(symbol, past_trading_day));
-                    const auto q = shares * bar.close;
-                    auto& es = report.equities[symbol];
-                    if (es.size() <= ix) {
-                        es.resize(ix + 1);
-                    }
-                    es[ix] = q;
-                    total += q;
-                }
-                report.total.push_back(total);
-            }
+            TRY_OR_RETURN_UNEXPECTED(report_this_trading_day(past_trading_day));
         }
 
         // Note that we need ask for rebalance day even on days we know are not trading days. The reason is that
@@ -140,7 +200,7 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
         // out that day 30 was a trading day by checking on the 31th.
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           const auto& maybe_rebalance_day,
-          dual_mom_fixed_etf_algorithm::get_past_trading_day_to_rebalance_after(market_data, ac, past_trading_day)
+          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(market_data, ac, past_trading_day)
         );
 
         const auto rebalance_result = switch_variant(
@@ -152,10 +212,13 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
               TRY_ASSIGN_OR_RETURN_UNEXPECTED(
                 const auto& response, dual_mom_fixed_etf_algorithm::rebalance(market_data, ac, rebalance_day)
               );
+              // Even if the rebalance day is not today, it must have been the last trade day.
+              CHECK(!report.local_days.empty() && report.local_days.back() == rebalance_day);
+              report.rebalance_day_idcs.push_back(report.local_days.size() - 1);
               if (response.desired_portfolio == previous_desired_portfolio) {
                   // println("[{}] -> {} NO CHANGE", past_trading_day, rebalance_day);
               } else {
-                  println("[{}] -> {} NEW PORTFOLIO: {}", past_trading_day, rebalance_day, response.desired_portfolio);
+                  println("[{}] REBALANCE to {}", rebalance_day, response.desired_portfolio);
                   previous_desired_portfolio = response.desired_portfolio;
                   TRY_ASSIGN_OR_RETURN_UNEXPECTED(
                     auto market_orders,
@@ -190,7 +253,32 @@ expected<BacktestResult, string> run_backtest(const BacktestConfig& bc, const du
     CHECK(report.cash.size() == s);
     for (const auto&& [_, v] : report.equities) {
         CHECK(v.size() <= s);
-        v.resize(s);
+    }
+
+    // Remove local days after the last rebalance day.
+    if (!report.rebalance_day_idcs.empty()) {
+        const auto N = report.rebalance_day_idcs.back() + 1;
+        CHECK(N <= s);
+        report.local_days.resize(N);
+        report.total.resize(N);
+        report.cash.resize(N);
+        for (const auto&& [_, v] : report.equities) {
+            v.resize(N);
+        }
+    }
+    CHECK(
+      report.rebalance_day_idcs.empty()
+      || (report.rebalance_day_idcs.front() == 0 && report.rebalance_day_idcs.back() == report.local_days.size() - 1)
+    );
+
+    report.cash_proxy_level.reserve(report.local_days.size());
+    report.cash_proxy_level.push_back(1.0);
+    for (size_t i = 1; i < report.local_days.size(); ++i) {
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+          const auto crf,
+          market_data.total_cash_return_factor(ac.cash_proxy, report.local_days[i - 1], report.local_days[i])
+        );
+        report.cash_proxy_level.push_back(report.cash_proxy_level.back() * crf);
     }
     return report;
 }

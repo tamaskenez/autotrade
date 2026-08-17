@@ -54,7 +54,7 @@ struct NotARebalanceDay {
 };
 
 // This algorithm rebalances the portfolio at certain days during year. Here's how to execute it:
-// - Call get_past_trading_day_to_rebalance_after after each day. It can be called on non-trading days, too. The
+// - Call get_rebalance_day_for_past_day after each day. It can be called on non-trading days, too. The
 //   important is that it must be called only when you are sure that if `past_day` was a trading day, then all the
 //   data for that day has already been uploaded by the data provider.
 // - If the answer is `chr::local_days`, call `rebalance`, by passing the day as `past_trading_day`. Otherwise it is a
@@ -74,10 +74,13 @@ struct NotARebalanceDay {
 //   to prevent too frequent trading.
 // - Estimate costs and gains from a rebalance and act accordingly.
 
-// `past_trading_day` (and days before it which might be queried according to the config.rebalance_day) can't be
+// Call this when all the market data has been uploaded by the data providers, for `past_day`, or, if `past_day` is
+// not a trading day, then for the last trading day.
+//
+// `past_day` (and days before it which might be queried according to the config.rebalance_day) can't be
 // before the first (historical bar) of any asset.
 expected<variant<chr::local_days, NotARebalanceDay>, string>
-get_past_trading_day_to_rebalance_after(MarketData& market_data, const Config& config, chr::local_days past_day);
+get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, chr::local_days past_day);
 
 // `past_trading_day` must have been a trading day with all the asset's daily bars available.
 expected<Response, string> rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day);

@@ -30,7 +30,5 @@ PointerAlignment: Left
 PPIndentWidth:   2
 SpaceAfterTemplateKeyword: false
 Macros:
-- INFIX_GLM_DOT=* Binder() *
-- INFIX_GLM_DOT(X)=* Binder() * (X)
-- "EVARIANT_CASE(w, n, a, v)=case n:"
+  - "EVARIANT_CASE(w, n, a, v)=case n:"
 IfMacros: [IF_MATCH]
