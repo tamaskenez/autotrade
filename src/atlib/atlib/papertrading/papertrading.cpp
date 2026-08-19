@@ -403,3 +403,14 @@ expected<ApplyMarketOrdersResult, string> apply_market_orders(
     }
     return ApplyMarketOrdersResult{.portfolio = std::move(portfolio), .asset_prices = std::move(asset_prices)};
 }
+
+double Portfolio::total(const std::flat_map<string, double>& asset_prices) const
+{
+    double total = cash;
+    for (const auto&& [symbol, shares] : equities) {
+        const auto price = asset_price_lookup(asset_prices, symbol);
+        LOG_IF(FATAL, !price) << format("No price for {}, reason: {}", symbol, price.error());
+        total += shares * *price;
+    }
+    return total;
+}

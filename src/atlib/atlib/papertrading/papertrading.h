@@ -4,8 +4,6 @@
 
 #include <flat_map>
 
-#include "meadow/math.h"
-
 // Used for 2 checks:
 // - trade orders less than this are rejected or ignored
 // - portfolio rebalancer (market_orders_from_portfolio_change) doesn't try to optimize remaining cash below this limit
@@ -15,6 +13,7 @@ struct Portfolio {
     double cash = 0;
     std::flat_map<string, double> equities; // Number of shares.
     void clear_below(double eps);
+    NODIS double total(const std::flat_map<string, double>& asset_prices) const;
 };
 
 // What a trade costs, as a single fraction of its trade value.
