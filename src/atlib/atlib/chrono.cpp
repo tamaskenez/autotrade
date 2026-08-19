@@ -1,13 +1,11 @@
-#pragma once
+#include "chrono.h"
 
-#include <meadow/cppext.h>
-
-inline double years_between_days(chr::local_days d1, chr::local_days d2)
+double years_between_days(chr::local_days d1, chr::local_days d2)
 {
     return chr::duration<double>(d2 - d1) / chr::duration<double>(chr::years(1));
 }
 
-inline bool is_on_or_later_than_next_year_same_date(chr::local_days d1, chr::local_days d2)
+bool is_on_or_later_than_next_year_same_date(chr::local_days d1, chr::local_days d2)
 {
     if (d2 - d1 < chr::days(365)) {
         return false;
