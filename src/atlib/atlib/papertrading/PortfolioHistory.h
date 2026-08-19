@@ -26,6 +26,10 @@ struct PortfolioHistory {
     // Return total snapshots, the returned vector corresponds to the `trading_days` vector.
     NODIS vector<double> total_for_trading_days() const;
 
+    // Return total[i]/total[i-1] snapshots, the returned vector corresponds to the `trading_days` vector but its one
+    // item shorter since it represents periods between days.
+    NODIS vector<double> return_factors_for_trading_days() const;
+
     NODIS vector<double> equity_position_values_for_trading_days(const string& symbol) const;
 
     // Return CAGR (Compound Annual Growth Rate) for the period trading_days.front() .. back()

@@ -51,6 +51,20 @@ vector<double> PortfolioHistory::total_for_trading_days() const
     return trading_days | vi::transform(&TradingDay::total) | ra::to<vector<double>>();
 }
 
+vector<double> PortfolioHistory::return_factors_for_trading_days() const
+{
+    const auto N = trading_days.size();
+    vector<double> return_factors;
+    if (N < 2) {
+        return return_factors;
+    }
+    return_factors.reserve(N - 1);
+    for (size_t i = 1; i < N; ++i) {
+        return_factors.push_back(trading_days[i].total / trading_days[i - 1].total);
+    }
+    return return_factors;
+}
+
 vector<double> PortfolioHistory::equity_position_values_for_trading_days(const string& symbol) const
 {
     auto it = equity_position_values.find(symbol);

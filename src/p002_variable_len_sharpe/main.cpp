@@ -57,10 +57,10 @@ expected<void, string> run()
     CHECK(!local_days.empty());
 
     // Create daily return factors of the equity.
-    vector<double> return_factors; // Of the equity `k_symbol`.
-    return_factors.reserve(N - 1);
+    vector<double> asset_return_factors; // Of the equity `k_symbol`.
+    asset_return_factors.reserve(N - 1);
     for (size_t i = 1; i < N; i++) {
-        return_factors.push_back(prices[i] / prices[i - 1]);
+        asset_return_factors.push_back(prices[i] / prices[i - 1]);
     }
     constexpr int duration_step = 40;
     constexpr int min_duration = 40;
@@ -68,13 +68,15 @@ expected<void, string> run()
     const auto durations = regspace(min_duration, duration_step, max_duration);
 
     // Actual trading starts on start_date + chr::days(1) to allow a cash-only snapshot to be made on start_date.
-    const auto jt_begin = ra::lower_bound(local_days, start_date + chr::days(1));
-    CHECK(jt_begin < local_days.end());
+    const auto cash_day_before_jt_begin = ra::lower_bound(local_days, start_date);
+    CHECK(cash_day_before_jt_begin < local_days.end());
+    const auto jt_begin = std::next(cash_day_before_jt_begin);
+    CHECK(cash_day_before_jt_begin < local_days.end());
     const auto jt_end = ra::lower_bound(local_days, end_date);
     CHECK(jt_end <= local_days.end());
 
     // Create traders, one for each duration.
-    auto traders = vector<Trader>(durations.size(), Trader(k_symbol, k_initial_capital, start_date));
+    auto traders = vector<Trader>(durations.size(), Trader(k_symbol, k_initial_capital, *cash_day_before_jt_begin));
 
     // For all traders (durations) go through start_date..end_date and make a buy/sell decision based on current
     // Sharpe ratio.
@@ -99,9 +101,9 @@ expected<void, string> run()
             // The return factor local_days[ix] to local_days[ix + 1] is stored in return_factors[ix].
             // The return factor local_days[jx - 1] to local_days[jx] is stored in return_factors[jx - 1].
             // Thus we need the range of return factors return_factors[ix] .. return_factors[jx - 1] (inclusive)
-            assert(cmp_less_equal(jx, return_factors.size()));
+            assert(cmp_less_equal(jx, asset_return_factors.size()));
             const auto sr = sharpe(
-              span(return_factors.data() + ix, return_factors.data() + jx),
+              span(asset_return_factors.data() + ix, asset_return_factors.data() + jx),
               1.0,
               duration / ybd,
               SharpeInputType::return_factor,
@@ -121,9 +123,34 @@ expected<void, string> run()
 
     CHECK(write_string_to_file(s, "/tmp/p2.m"));
 
+    const auto j0 = sucast(cash_day_before_jt_begin - local_days.begin());
+    const auto j1 = sucast(jt_end - local_days.begin());
+    const auto d0 = local_days[j0];
+    const auto period_asset_return_factors =
+      span(asset_return_factors.begin() + uscast(j0), asset_return_factors.begin() + signed_subtract(j1, 1));
     for (size_t i = 0; i < durations.size(); ++i) {
         auto& t = traders[i];
-        println("trader dur = {}, return: {:.2f}%, {} orders", durations[i], 100 * t.ph.cagr(), t.ph.num_market_orders);
+        CHECK(d0 == t.ph.trading_days.front().date);
+        const auto return_factors = t.ph.return_factors_for_trading_days();
+        const auto periods_per_year = ifcast<double>(return_factors.size())
+                                    / years_between_days(t.ph.trading_days.front().date, t.ph.trading_days.back().date);
+        const auto raw_sharpe =
+          sharpe(return_factors, 1.0, periods_per_year, SharpeInputType::return_factor, SharpeAggregation::geometric);
+        const auto sharpe_to_asset = sharpe(
+          return_factors,
+          period_asset_return_factors,
+          periods_per_year,
+          SharpeInputType::return_factor,
+          SharpeAggregation::geometric
+        );
+        println(
+          "trader dur = {}, return: {:.2f}%, sharpe: {:.2f}, to asset: {:.2f} from {} orders",
+          durations[i],
+          100 * t.ph.cagr(),
+          raw_sharpe,
+          sharpe_to_asset,
+          t.ph.num_market_orders
+        );
     }
     return {};
 }
