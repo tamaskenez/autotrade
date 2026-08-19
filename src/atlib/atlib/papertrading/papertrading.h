@@ -12,7 +12,6 @@ constexpr double k_min_cash_amount_to_trade = 1;
 struct Portfolio {
     double cash = 0;
     std::flat_map<string, double> equities; // Number of shares.
-    void clear_below(double eps);
     NODIS double total(const std::flat_map<string, double>& asset_prices) const;
 };
 

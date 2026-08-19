@@ -71,6 +71,56 @@ TEST(AppendableIntervals, IntervalThatNeverChangesReadsAsBeforeBegin)
     EXPECT_EQ(a.get_values_for_key_range(0, 3), (vector<double>{5, 5, 5}));
 }
 
+// erase_from() drops the tail of a history the caller has decided not to keep --
+// PortfolioHistory cutting its trading days back to the last rebalance. What has
+// to survive is the value in force *at* the new end, which comes from the last
+// change before `key` and is not itself recorded anywhere near it.
+TEST(AppendableIntervals, EraseFromDropsTheChangesAtAndAfterTheKey)
+{
+    Intervals a(0.0);
+    a.insert_at_end(2, 1.0);
+    a.insert_at_end(4, 2.0);
+    a.insert_at_end(7, 3.0);
+
+    // Between two changes: the interval that spans the cut keeps its value and
+    // simply runs on to the end.
+    auto inside = a;
+    inside.erase_from(5);
+    EXPECT_EQ(inside.get_values_for_key_range(0, 9), (vector<double>{0, 0, 1, 1, 2, 2, 2, 2, 2}));
+
+    // On a change's own key, which goes with the tail rather than staying as the
+    // last surviving value.
+    auto on_change = a;
+    on_change.erase_from(4);
+    EXPECT_EQ(on_change.get_values_for_key_range(0, 9), (vector<double>{0, 0, 1, 1, 1, 1, 1, 1, 1}));
+
+    // Past every change there is nothing to drop.
+    auto beyond = a;
+    beyond.erase_from(8);
+    EXPECT_EQ(beyond.get_values_for_key_range(0, 9), (vector<double>{0, 0, 1, 1, 2, 2, 2, 3, 3}));
+
+    // And erasing from the start leaves the empty interval, which still answers
+    // for every key with before_begin.
+    auto everything = a;
+    everything.erase_from(0);
+    EXPECT_EQ(everything.get_values_for_key_range(0, 9), (vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0}));
+    EXPECT_TRUE(everything.begin() == everything.end());
+}
+
+// The erased changes are gone rather than hidden, so the append-only precondition
+// is met again by any key at or after the cut -- including the key that was cut
+// at, which a moment ago held a change of its own.
+TEST(AppendableIntervals, EraseFromLeavesTheIntervalAppendable)
+{
+    Intervals a(0.0);
+    a.insert_at_end(2, 1.0);
+    a.insert_at_end(4, 2.0);
+
+    a.erase_from(4);
+    a.insert_at_end(4, 5.0);
+    EXPECT_EQ(a.get_values_for_key_range(0, 6), (vector<double>{0, 0, 1, 1, 5, 5}));
+}
+
 // The append-only precondition and the direction of the range are the caller's to
 // get right, and both are CHECKed rather than reported. Pinned because a key that
 // goes backwards would otherwise be recorded and read back as an interval whose

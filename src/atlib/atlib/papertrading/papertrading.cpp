@@ -4,20 +4,6 @@
 
 #include <meadow/math.h>
 
-void Portfolio::clear_below(double eps)
-{
-    if (equal_epsilon(cash, 0.0, eps)) {
-        cash = 0;
-    }
-    for (auto it = equities.begin(); it != equities.end();) {
-        if (equal_epsilon(it->second, 0.0, eps)) {
-            it = equities.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
 namespace
 {
 struct BrokerCostConfig {
@@ -128,7 +114,11 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
     // Note that the assets_to_keep will contain equities that might need to be bought or sold
     // to maintain equal proportions.
     vector<string> assets_to_buy, assets_to_sell, assets_to_keep;
-    for (const auto& symbol : current_portfolio.equities.keys()) {
+    for (auto&& [symbol, q] : current_portfolio.equities) {
+        if (q == 0) {
+            continue;
+        }
+        CHECK(q > 0); // Short positions are not handled for now.
         if (ra::find(desired_portfolio, symbol) == desired_portfolio.end()) {
             assets_to_sell.push_back(symbol);
         } else {
@@ -136,7 +126,7 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
         }
     }
     for (const auto& s : desired_portfolio) {
-        if (!current_portfolio.equities.contains(s)) {
+        if (auto it = current_portfolio.equities.find(s); it == current_portfolio.equities.end() || it->second == 0) {
             assets_to_buy.push_back(s);
         }
     }
@@ -408,6 +398,9 @@ double Portfolio::total(const std::flat_map<string, double>& asset_prices) const
 {
     double total = cash;
     for (const auto&& [symbol, shares] : equities) {
+        if (shares == 0) {
+            continue;
+        }
         const auto price = asset_price_lookup(asset_prices, symbol);
         LOG_IF(FATAL, !price) << format("No price for {}, reason: {}", symbol, price.error());
         total += shares * *price;

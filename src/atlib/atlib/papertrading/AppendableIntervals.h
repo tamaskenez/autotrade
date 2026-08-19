@@ -36,6 +36,14 @@ public:
         }
     }
 
+    // Erase all intervals from or above key.
+    void erase_from(const Key& key)
+    {
+        while (!changes.empty() && key <= changes.back().first) {
+            changes.pop_back();
+        }
+    }
+
     // Return vector where v[0] corresponds to the value at `key_begin`, v[1] to the value at `key_begin + 1`, etc..
     // `Key` must be incrementable and `key_end - key_begin` must be an integral.
     // For now, Key is required to be an integral, this could be relaxed to input iterator or random access iterator.
@@ -78,6 +86,7 @@ public:
     {
         return changes.begin();
     }
+
     NODIS const_iterator end() const
     {
         return changes.end();

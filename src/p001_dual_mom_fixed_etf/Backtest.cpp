@@ -92,6 +92,7 @@ expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const du
 
     vector<string> all_assets = ac.equities;
     all_assets.push_back(ac.defensive_asset);
+    std::flat_map<string, double> asset_prices;
 
     CHECK(bc.start_month < bc.end_month);
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
@@ -113,24 +114,23 @@ expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const du
     // 3: filling pending orders with today's opening prices
     // 4: rebalancing (in real life: after exchange closes and all data is uploaded by the provider and before next
     // day's opening
-    const auto report_this_trading_day =
-      [&report, &portfolio, &market_data](chr::local_days past_trading_day) -> expected<void, string> {
-        // Report.
-        const auto ix = report.local_days.size();
-        report.local_days.push_back(past_trading_day);
-        report.cash.push_back(portfolio.cash);
-        double total = portfolio.cash;
-        for (auto&& [symbol, shares] : portfolio.equities) {
-            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& bar, market_data.daily_bar(symbol, past_trading_day));
-            const auto q = shares * bar.close;
-            auto& es = report.equities[symbol];
-            if (es.size() <= ix) {
-                es.resize(ix + 1);
-            }
-            es[ix] = q;
-            total += q;
+    const auto report_this_trading_day = [&report, &portfolio, &market_data, &all_assets, &asset_prices, &ac](
+                                           chr::local_days past_trading_day
+                                         ) -> expected<void, string> {
+        double cash_proxy_level = 1.0;
+        if (!report.portfolio_history.trading_days.empty()) {
+            const auto& tdb = report.portfolio_history.trading_days.back();
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+              const auto crf, market_data.total_cash_return_factor(ac.cash_proxy, tdb.date, past_trading_day)
+            );
+            cash_proxy_level = tdb.cash_proxy_level * crf;
         }
-        report.total.push_back(total);
+        // Report.
+        for (const auto& s : all_assets) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& bar, market_data.daily_bar(s, past_trading_day));
+            asset_prices[s] = bar.close;
+        }
+        report.portfolio_history.make_snapshot(past_trading_day, cash_proxy_level, portfolio, asset_prices);
         return {};
     };
     const auto apply_corporate_actions =
@@ -182,10 +182,9 @@ expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const du
                     *pending_market_orders
                   )
                 );
-                report.num_market_orders += uscast(pending_market_orders->size());
+                report.portfolio_history.num_market_orders += iicast<int>(pending_market_orders->size());
                 pending_market_orders.reset();
                 portfolio = response.portfolio;
-                portfolio.clear_below(1e-6);
                 println("Portfolio after rebalance:");
                 for (auto&& [symbol, q] : portfolio.equities) {
                     println("- {}: {:.3f} shares", symbol, q);
@@ -213,8 +212,9 @@ expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const du
                 const auto& response, dual_mom_fixed_etf_algorithm::rebalance(market_data, ac, rebalance_day)
               );
               // Even if the rebalance day is not today, it must have been the last trade day.
-              CHECK(!report.local_days.empty() && report.local_days.back() == rebalance_day);
-              report.rebalance_day_idcs.push_back(report.local_days.size() - 1);
+              auto& tds = report.portfolio_history.trading_days;
+              CHECK(!tds.empty() && tds.back().date == rebalance_day);
+              report.rebalance_day_idcs.push_back(tds.size() - 1);
               if (response.desired_portfolio == previous_desired_portfolio) {
                   // println("[{}] -> {} NO CHANGE", past_trading_day, rebalance_day);
               } else {
@@ -248,37 +248,16 @@ expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const du
         }
     }
 
-    const auto s = report.local_days.size();
-    CHECK(report.total.size() == s);
-    CHECK(report.cash.size() == s);
-    for (const auto&& [_, v] : report.equities) {
-        CHECK(v.size() <= s);
-    }
-
     // Remove local days after the last rebalance day.
-    if (!report.rebalance_day_idcs.empty()) {
-        const auto N = report.rebalance_day_idcs.back() + 1;
-        CHECK(N <= s);
-        report.local_days.resize(N);
-        report.total.resize(N);
-        report.cash.resize(N);
-        for (const auto&& [_, v] : report.equities) {
-            v.resize(N);
+    {
+        const auto& idcs = report.rebalance_day_idcs;
+        if (!idcs.empty()) {
+            const auto N = idcs.back() + 1;
+            CHECK(N <= report.portfolio_history.trading_days.size());
+            report.portfolio_history.trading_days_truncate(N);
         }
+        CHECK(idcs.empty() || (idcs.front() == 0 && idcs.back() == report.portfolio_history.trading_days.size() - 1));
     }
-    CHECK(
-      report.rebalance_day_idcs.empty()
-      || (report.rebalance_day_idcs.front() == 0 && report.rebalance_day_idcs.back() == report.local_days.size() - 1)
-    );
 
-    report.cash_proxy_level.reserve(report.local_days.size());
-    report.cash_proxy_level.push_back(1.0);
-    for (size_t i = 1; i < report.local_days.size(); ++i) {
-        TRY_ASSIGN_OR_RETURN_UNEXPECTED(
-          const auto crf,
-          market_data.total_cash_return_factor(ac.cash_proxy, report.local_days[i - 1], report.local_days[i])
-        );
-        report.cash_proxy_level.push_back(report.cash_proxy_level.back() * crf);
-    }
     return report;
 }

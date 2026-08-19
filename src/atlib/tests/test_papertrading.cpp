@@ -265,6 +265,37 @@ TEST_F(PortfolioChangeTest, EmptyHoldingProducesNoOrder)
     }
 }
 
+// The other direction of the same question, and the one that costs money to get
+// wrong: an entry sold down to zero but not erased is a symbol the portfolio does
+// not hold, so a basket naming it again has to buy it back. Nothing in the
+// arithmetic below distinguishes this from a symbol never held, which is the
+// point -- it is the same call as CashIsFullyInvested with one dead entry left
+// lying in the map.
+//
+// Reading that entry as a holding put B in assets_to_keep, which left nothing to
+// buy and nothing to sell, which is the one shape the function answers with no
+// orders at all. The basket then silently stayed in A alone for as long as the
+// entry lingered.
+TEST_F(PortfolioChangeTest, ClosedPositionIsBoughtBackWhenTheBasketWantsItAgain)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 40.0 }
+    };
+
+    const auto before = Portfolio{
+      .cash = 0.0, .equities = {{"A", 1'000.0}, {"B", 0.0}}
+    };
+    const auto os = orders(BrokerCostScheme::flat_10bp, before, {"A", "B"});
+    ASSERT_TRUE(os.has_value()) << os.error();
+    ASSERT_FALSE(os->empty()) << "B is wanted and not held, so it has to be bought";
+
+    const auto after = fill(before, *os, BrokerCostScheme::flat_10bp);
+    EXPECT_NEAR(after.cash, 0.0, 2 * k_min_cash_amount_to_trade) << describe(*os);
+    EXPECT_NEAR(after.equities.at("A") * 100.0, after.equities.at("B") * 40.0, 2 * k_min_cash_amount_to_trade)
+      << describe(*os);
+}
+
 // A short position reaches estimate_net_income_from_selling_equity_by_shares()
 // with a negative share count and trips its CHECK.
 //

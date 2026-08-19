@@ -1,5 +1,6 @@
 #include "Backtest.h"
-#include "common.h"
+
+#include "atlib/chrono.h"
 
 #include <meadow/matlab.h>
 
@@ -27,8 +28,10 @@ int main()
     print(f, "day=[");
     vector<double> tick_datenums;
     vector<string> tick_labels;
-    auto last_ymd = chr::year_month_day(result->local_days.front());
-    for (auto d : result->local_days) {
+    const auto& ph = result->portfolio_history;
+    auto last_ymd = chr::year_month_day(ph.trading_days.front().date);
+    for (auto& td : ph.trading_days) {
+        const auto d = td.date;
         print(f, " {}", matlab::datenum(d));
         const auto ymd = chr::year_month_day(d);
         if (ymd.year() != last_ymd.year() && ymd.month() == chr::month(1)) {
@@ -58,18 +61,18 @@ int main()
         print(f, "'{}'", s);
     }
     println(f, "];");
-    println(f, "cash={}';", result->cash);
-    println(f, "total={}';", result->total);
-    for (auto&& [k, v] : result->equities) {
-        println(f, "eq_{}={}';", k, v);
+    println(f, "cash={}';", ph.cash_for_trading_days());
+    println(f, "total={}';", ph.total_for_trading_days());
+    for (const auto& k : ph.equity_position_values.keys()) {
+        println(f, "eq_{}={}';", k, ph.equity_position_values_for_trading_days(k));
     }
     print(f, "plot(day, total, ':'");
-    for (const auto& s : result->equities.keys()) {
+    for (const auto& s : ph.equity_position_values.keys()) {
         print(f, ", day, eq_{}", s);
     }
     println(f, "), grid");
     print(f, "legend('total'");
-    for (const auto& s : result->equities.keys()) {
+    for (const auto& s : ph.equity_position_values.keys()) {
         print(f, ", '{}'", s);
     }
     println(f, ")");
@@ -78,32 +81,32 @@ int main()
     fclose(f);
 
     println("==== REPORT ====");
-    const auto df = result->local_days.front();
-    const auto db = result->local_days.back();
+    const auto df = ph.trading_days.front().date;
+    const auto db = ph.trading_days.back().date;
     const auto ymdf = chr::year_month_day(df);
     const auto ymdb = chr::year_month_day(db);
-    println("Period: {} .. {}", result->local_days.front(), result->local_days.back());
+    println("Period: {} .. {}", df, db);
     println(
       "{} calendar days, {} months, {:.2f} years, {} trading days",
       (db - df).count(),
       (ymdb.year() / ymdb.month() - ymdf.year() / ymdf.month()) / chr::months(1),
       years_between_days(df, db),
-      result->total.size()
+      ph.trading_days.size()
     );
-    println("CAGR: {:.2f}%", 100 * result->cagr());
-    auto [max_drawdown, longest_underwater_days] = result->max_drawdown_and_longest_underwater_days();
+    println("CAGR: {:.2f}%", 100 * ph.cagr());
+    auto [max_drawdown, longest_underwater_days] = ph.max_drawdown_and_longest_underwater_days();
     println("max drawdown: {:.2f}%, longest underwater: {} days", 100 * max_drawdown, longest_underwater_days);
-    println("Num market orders: {}", result->num_market_orders);
+    println("Num market orders: {}", ph.num_market_orders);
     if (const auto N = result->rebalance_day_idcs.size(); N >= 2) {
-        const auto avg = ifcast<double>((result->local_days[result->rebalance_day_idcs.back()]
-                                         - result->local_days[result->rebalance_day_idcs.front()])
+        const auto avg = ifcast<double>((ph.trading_days[result->rebalance_day_idcs.back()].date
+                                         - ph.trading_days[result->rebalance_day_idcs.front()].date)
                                           .count())
                        / ifcast<double>(N - 1);
         println("Avg cal. days between rebal.: {:.2f}", avg);
-        const auto sh_da = result->sharpe_daily(SharpeAggregation::arithmetic);
-        const auto sh_dg = result->sharpe_daily(SharpeAggregation::geometric);
-        const auto sh_ma = result->sharpe_through_rebalance_days(SharpeAggregation::arithmetic);
-        const auto sh_mg = result->sharpe_through_rebalance_days(SharpeAggregation::geometric);
+        const auto sh_da = ph.sharpe_daily(SharpeAggregation::arithmetic);
+        const auto sh_dg = ph.sharpe_daily(SharpeAggregation::geometric);
+        const auto sh_ma = ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, result->rebalance_day_idcs);
+        const auto sh_mg = ph.sharpe_through_selected_days(SharpeAggregation::geometric, result->rebalance_day_idcs);
         println("+---------------+------------+-----------+");
         println("|               | arithmetic | geometric |");
         println("+---------------+------------+-----------+");
@@ -112,7 +115,7 @@ int main()
         println("+---------------+------------+-----------+");
     }
     // Worst rolling 12-month:
-    if (const auto worst_return = result->worst_12_month_return()) {
+    if (const auto worst_return = ph.worst_12_month_return()) {
         println("Worst 12-month return: {:.2f}%", 100 * *worst_return);
     }
 
