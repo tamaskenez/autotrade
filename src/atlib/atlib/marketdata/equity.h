@@ -74,6 +74,18 @@ struct EquityHistory {
     vector<DailyBar> bars;
     vector<Distribution> distributions;
     vector<Split> splits;
+
+    // Adjust the daily bars (apply distributions and splits) in place, normalized in a way that the last bar's prices
+    // don't change.
+    // Clear the distributions and splits vectors.
+    //
+    // The bars become a total-return series: consecutive closes then grow by what a holder earned, on the convention
+    // total_return.h documents -- distributions reinvested at the close of their ex-date, at the declared amount.
+    // Volumes are restated in current shares, so earlier ones are fractional after a split.
+    //
+    // An event dated after the last bar is dropped without effect: normalizing on that bar is what makes the series
+    // comparable across a truncated history, and there is nothing after it to carry the event.
+    void adjust();
 };
 
 // Which days have data is not something to ask a calendar: it is the set of
