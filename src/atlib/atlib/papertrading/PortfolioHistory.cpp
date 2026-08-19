@@ -67,7 +67,9 @@ double PortfolioHistory::cagr() const
     }
     const auto& f = trading_days.front();
     const auto& b = trading_days.back();
-    return pow(b.total / f.total, 1.0 / years_between_days(f.date, b.date)) - 1;
+    const auto years = years_between_days(f.date, b.date);
+    const auto net_total_ratio = b.total / f.total;
+    return pow(net_total_ratio, 1.0 / years) - 1;
 }
 
 pair<double, int> PortfolioHistory::max_drawdown_and_longest_underwater_days() const

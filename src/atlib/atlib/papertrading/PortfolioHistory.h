@@ -17,7 +17,7 @@ struct PortfolioHistory {
       const std::flat_map<string, double>& equity_prices
     );
 
-    // Remove trading days and intervals from trading_days[n]. No-op if trading_days is already smaller.PPle
+    // Remove trading days and intervals from trading_days[n]. No-op if trading_days is already smaller.
     void trading_days_truncate(size_t n);
 
     // Return cash snapshots, the returned vector corresponds to the `trading_days` vector.

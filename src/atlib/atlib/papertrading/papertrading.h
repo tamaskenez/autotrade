@@ -13,6 +13,7 @@ struct Portfolio {
     double cash = 0;
     std::flat_map<string, double> equities; // Number of shares.
     NODIS double total(const std::flat_map<string, double>& asset_prices) const;
+    NODIS double get_equity_amount(const string& symbol) const;
 };
 
 // What a trade costs, as a single fraction of its trade value.

@@ -28,6 +28,15 @@ BrokerCostConfig config(BrokerCostScheme scheme)
 }
 } // namespace
 
+double Portfolio::get_equity_amount(const string& symbol) const
+{
+    const auto it = equities.find(symbol);
+    if (it == equities.end()) {
+        return 0.0;
+    }
+    return it->second;
+}
+
 double estimate_net_income_from_selling_equity_by_shares(BrokerCostScheme scheme, double num_shares, double price_quote)
 {
     // A sale of a negative quantity is a buy the caller has lost track of, and
