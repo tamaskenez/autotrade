@@ -10,7 +10,9 @@ enum class RebalanceDay {
     first_trading_day_of_month,
     last_trading_day_of_month,
     first_trading_day_of_week,
-    last_trading_day_of_week
+    last_trading_day_of_week,
+    month_10th, // First trading day on or after the 10th day of the month
+    month_15th  // First trading day on or after the 15th day of the month
 };
 
 struct Config {

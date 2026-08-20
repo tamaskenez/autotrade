@@ -121,6 +121,8 @@ anchor_boundary(RebalanceDay rebalance_day, const variant<chr::months, chr::week
     switch (rebalance_day) {
     case RebalanceDay::first_trading_day_of_month:
     case RebalanceDay::first_trading_day_of_week:
+    case RebalanceDay::month_10th:
+    case RebalanceDay::month_15th:
         return JumpToPeriodBoundary::first_day;
     case RebalanceDay::last_trading_day_of_month:
     case RebalanceDay::last_trading_day_of_week:
@@ -371,10 +373,9 @@ get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, ch
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& has_daily_bar, compute_has_daily_bar());
 
     // Check if the past_day was a rebalance day.
-    switch (config.rebalance_day) {
-    case RebalanceDay::first_trading_day_of_month: {
+    const auto nth_day_of_month = [past_day, &all_assets, has_daily_bar, &market_data](chr::day day_of_month) {
         const chr::year_month_day ymd{past_day};
-        const auto first_day_of_month = ymd.year() / ymd.month() / chr::day{1};
+        const auto first_day_of_month = ymd.year() / ymd.month() / day_of_month;
         return get_past_day_if_first_trading_day_of_period(
           market_data,
           all_assets,
@@ -383,7 +384,14 @@ get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, ch
           "first trading day of month",
           chr::local_days(first_day_of_month)
         );
-    }
+    };
+    switch (config.rebalance_day) {
+    case RebalanceDay::first_trading_day_of_month:
+        return nth_day_of_month(chr::day(1));
+    case RebalanceDay::month_10th:
+        return nth_day_of_month(chr::day(10));
+    case RebalanceDay::month_15th:
+        return nth_day_of_month(chr::day(15));
     case RebalanceDay::last_trading_day_of_month: {
         const chr::year_month_day ymd{past_day};
         const auto first_day_of_month = ymd.year() / ymd.month() / chr::day{1};
@@ -450,12 +458,6 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
 
     // The anchor: one `lookback_period` back on the calendar, then the last day at
     // or before that on which every asset traded.
-    //
-    // Resolved once, across all assets together, rather than per symbol. Snapping
-    // per symbol would let two assets open their windows on different dates
-    // whenever one has a holiday the other does not, and relative momentum would
-    // then compare returns over unequal windows -- a small, plausible, invisible
-    // bias in exactly the comparison that picks the holding.
     const optional<JumpToPeriodBoundary> boundary = anchor_boundary(config.rebalance_day, config.lookback_period);
     const auto anchor_day = minus(past_trading_day, config.lookback_period, boundary);
     // anchor day might or might not be a trading day. Scan in the proper direction to find the nearest trading day.
