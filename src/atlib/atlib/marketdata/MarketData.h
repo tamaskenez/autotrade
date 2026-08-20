@@ -328,6 +328,25 @@ public:
     // still an error -- there is nothing to carry forward.
     expected<double, string> total_cash_return_factor(string_view symbol, chr::local_days from, chr::local_days to);
 
+    // Prepend an equity's daily time series with another one's data to extend history backwards.
+    // - Load `prepended_symbol` into cache as if asking for the day `prepended_symbol_as_of`
+    // - Remove the first `ignore_first_days` number of calendar days from its history to remove possibly noisy/ramp-up
+    // bars.
+    // - Load `proxy_symbol` into cache as if asking for the day `prepended_symbol_as_of`
+    // - Starting from the calender day of the first bar of `prepended_symbol` advance until the day where both equities
+    // have a daily bar and neither of them have corporate actions. This will be the anchor day.
+    // - Remove days before the anchor day from `prepended_symbol`'s history.
+    // - Calculate the price factor from the opening price at anchor day: price_factor = prepended_open/proxy_open
+    // - Prepend the equity history in the cache of `prepended_symbol` with the equity history of `proxy_symbol` before
+    // the anchor day, multiplied by price factor At the end of the operation, the cache will contain the extended
+    // history of `prepended_symbol` and the unchanged history of `proxy_symbol`.
+    expected<void, string> prepend_equity_with_proxy(
+      string_view prepended_symbol,
+      chr::local_days prepended_symbol_as_of,
+      string_view proxy_symbol,
+      chr::days ignore_first_days
+    );
+
 private:
     // One symbol's parsed history, plus what this run has already tried in order
     // to get it. Templated because the rules below are the same rules for a price

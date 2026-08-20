@@ -121,6 +121,65 @@ string tiingo_payload(span<const Row> rows)
     return format("[{}]", out);
 }
 
+// A third payload shape, for the splice: open and close differ, because the
+// anchor is taken from the opens and a series with open == close cannot tell a
+// factor computed from the wrong one apart.
+struct SpliceRow {
+    string_view date;
+    double open;
+    double close;
+    double div_cash;
+    double split_factor;
+};
+
+// The prepended instrument. Listed late, and the first two bars are in the way on
+// purpose: 01-03 falls inside the ramp-up window the test ignores, and 01-04
+// carries a dividend, so the anchor can only be 01-05.
+constexpr string_view k_new_symbol = "NEW";
+
+constexpr std::array k_new_rows{
+  SpliceRow{"2024-01-03"sv, 10.0, 10.5, 0.0, 1.0},
+  SpliceRow{"2024-01-04"sv, 20.0, 21.0, 1.0, 1.0},
+  SpliceRow{"2024-01-05"sv, 40.0, 44.0, 0.0, 1.0},
+  SpliceRow{"2024-01-08"sv, 44.0, 45.0, 0.0, 1.0},
+};
+
+// The proxy, reaching four sessions further back, carrying one event of each kind
+// before the anchor. Its 01-05 open of 8 against the 40 above makes the price
+// factor exactly 5.
+constexpr string_view k_old_symbol = "OLD";
+
+constexpr std::array k_old_rows{
+  SpliceRow{"2024-01-01"sv, 1.0, 1.1, 0.0, 2.0},
+  SpliceRow{"2024-01-02"sv, 2.0, 2.2, 0.5, 1.0},
+  SpliceRow{"2024-01-03"sv, 4.0, 4.4, 0.0, 1.0},
+  SpliceRow{"2024-01-04"sv, 5.0, 5.5, 0.0, 1.0},
+  SpliceRow{"2024-01-05"sv, 8.0, 8.8, 0.0, 1.0},
+  SpliceRow{"2024-01-08"sv, 9.0, 9.9, 0.0, 1.0},
+};
+
+string tiingo_payload(span<const SpliceRow> rows)
+{
+    string out;
+    for (const auto& r : rows) {
+        if (!out.empty()) {
+            out += ',';
+        }
+        out += format(
+          R"({{"date":"{}T00:00:00.000Z","open":{},"high":{},"low":{},)"
+          R"("close":{},"volume":1000.0,"divCash":{},"splitFactor":{}}})",
+          r.date,
+          r.open,
+          std::max(r.open, r.close),
+          std::min(r.open, r.close),
+          r.close,
+          r.div_cash,
+          r.split_factor
+        );
+    }
+    return format("[{}]", out);
+}
+
 class MarketDataTest : public ::testing::Test
 {
 protected:
@@ -160,9 +219,9 @@ protected:
 
     // Fails the test rather than returning, so a test body reads as a statement
     // about the calendar and not as error plumbing.
-    static DailyBarAvailability availability(MarketData& md, chr::local_days d)
+    static DailyBarAvailability availability(MarketData& md, chr::local_days d, string_view symbol = k_symbol)
     {
-        const auto got = md.daily_bar_availability(k_symbol, d);
+        const auto got = md.daily_bar_availability(symbol, d);
         EXPECT_TRUE(got.has_value()) << (got ? string{} : got.error());
         // A value no test expects, so a swallowed error cannot pass for one.
         return got.value_or(DailyBarAvailability::after_last_bar);
@@ -452,6 +511,171 @@ TEST_F(TotalReturnDeathTest, EitherEndpointPastAsOfTerminates)
 
     EXPECT_DEATH((void)md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 2), day(2024, 1, 9)), "");
     EXPECT_DEATH((void)md.total_equity_return_factor_close_to_close(k_tr_symbol, day(2024, 1, 8), day(2024, 1, 3)), "");
+}
+
+// ------------------------------------------------------- splicing on a proxy
+
+class SpliceTest : public MarketDataTest
+{
+protected:
+    void SetUp() override
+    {
+        MarketDataTest::SetUp();
+        write_payload(k_new_symbol, tiingo_payload(k_new_rows));
+        write_payload(k_old_symbol, tiingo_payload(k_old_rows));
+    }
+
+    // The splice every test below starts from: one calendar day of ramp-up
+    // ignored, which drops 01-03 and puts the anchor on 01-05.
+    static void splice(MarketData& md)
+    {
+        const auto done = md.prepend_equity_with_proxy(k_new_symbol, day(2024, 1, 8), k_old_symbol, chr::days(1));
+        ASSERT_TRUE(done.has_value()) << (done ? string{} : done.error());
+    }
+
+    static DailyBar bar(MarketData& md, string_view symbol, chr::local_days d)
+    {
+        const auto got = md.daily_bar(symbol, d);
+        EXPECT_TRUE(got.has_value()) << (got ? string{} : got.error());
+        return got.value_or(DailyBar{});
+    }
+
+    static CorporateActions actions(MarketData& md, chr::local_days d)
+    {
+        const auto got = md.corporate_actions(k_new_symbol, d);
+        EXPECT_TRUE(got.has_value()) << (got ? string{} : got.error());
+        return got.value_or(CorporateActions{});
+    }
+};
+
+// The history now starts where the proxy's does, at prices on the prepended
+// instrument's scale: 2.0 * (40/8) = 10.0.
+TEST_F(SpliceTest, HistoryReachesBackToTheProxy)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_EQ(availability(md, day(2024, 1, 2), k_new_symbol), available) << "before NEW listed";
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 2)).open, 10.0);
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 2)).close, 11.0);
+}
+
+// From the anchor forward the prepended instrument's own prices are untouched --
+// scaling those instead of the proxy's would restate the live series.
+TEST_F(SpliceTest, BarsFromTheAnchorAreUnscaled)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 5)).open, 40.0);
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 8)).close, 45.0);
+}
+
+// 01-03 exists in both, and after a one-day ramp-up it is the proxy's bar that
+// survives: NEW's own opens at 10, the scaled proxy's at 4.0 * 5 = 20.
+TEST_F(SpliceTest, RampUpBarsAreReplacedByTheProxy)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 3)).open, 20.0);
+}
+
+// A distribution is quoted in the units of the row it lands on, so it scales with
+// the prices; a split ratio has no units and does not.
+TEST_F(SpliceTest, ProxyEventsBeforeTheAnchorAreCarried)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_DOUBLE_EQ(actions(md, day(2024, 1, 2)).distribution_amount, 2.5);
+    EXPECT_DOUBLE_EQ(actions(md, day(2024, 1, 1)).split_factor, 2.0);
+}
+
+// NEW's own 01-04 dividend goes with the bars it belonged to. Keeping it would
+// credit a payment against the proxy's price series, which never made it.
+TEST_F(SpliceTest, PrependedEventsBeforeTheAnchorAreDropped)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_DOUBLE_EQ(actions(md, day(2024, 1, 4)).distribution_amount, 0.0);
+}
+
+// The point of the whole operation: a return window that spans the splice.
+//
+//   01-02 -> 01-08   45/11, no event in the half-open window
+//   01-01 -> 01-03   (11 + 2.5)/5.5 * 22/11, the carried dividend included
+TEST_F(SpliceTest, ReturnsSpanTheSplice)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    const auto across = md.total_equity_return_factor_close_to_close(k_new_symbol, day(2024, 1, 2), day(2024, 1, 8));
+    ASSERT_TRUE(across.has_value()) << (across ? string{} : across.error());
+    EXPECT_DOUBLE_EQ(*across, 45.0 / 11.0);
+
+    const auto early = md.total_equity_return_factor_close_to_close(k_new_symbol, day(2024, 1, 1), day(2024, 1, 3));
+    ASSERT_TRUE(early.has_value()) << (early ? string{} : early.error());
+    EXPECT_DOUBLE_EQ(*early, 13.5 / 5.5 * 2.0);
+}
+
+TEST_F(SpliceTest, ProxyIsLeftAlone)
+{
+    MarketData md = market_data();
+    splice(md);
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_DOUBLE_EQ(bar(md, k_old_symbol, day(2024, 1, 2)).open, 2.0);
+    EXPECT_DOUBLE_EQ(actions(md, day(2024, 1, 2)).distribution_amount, 2.5) << "NEW still carries the scaled copy";
+    const auto proxy_actions = md.corporate_actions(k_old_symbol, day(2024, 1, 2));
+    ASSERT_TRUE(proxy_actions.has_value()) << proxy_actions.error();
+    EXPECT_DOUBLE_EQ(proxy_actions->distribution_amount, 0.5);
+}
+
+// A ramp-up window that swallows the overlap leaves no day the two share.
+TEST_F(SpliceTest, NoUsableAnchorIsReported)
+{
+    MarketData md = market_data();
+
+    const auto done = md.prepend_equity_with_proxy(k_new_symbol, day(2024, 1, 8), k_old_symbol, chr::days(365));
+    EXPECT_FALSE(done.has_value());
+}
+
+TEST_F(SpliceTest, SelfProxyIsRejected)
+{
+    MarketData md = market_data();
+
+    EXPECT_FALSE(md.prepend_equity_with_proxy(k_new_symbol, day(2024, 1, 8), k_new_symbol, chr::days(0)).has_value());
+}
+
+// The proxy starts no earlier, so there is nothing to prepend. Reported rather
+// than silently doing nothing: a no-op splice is a mistake in the universe, and
+// the backtest that follows would run on a history the caller thinks is longer.
+TEST_F(SpliceTest, ProxyWithNoEarlierHistoryIsReported)
+{
+    MarketData md = market_data();
+
+    const auto done = md.prepend_equity_with_proxy(k_old_symbol, day(2024, 1, 8), k_new_symbol, chr::days(0));
+    EXPECT_FALSE(done.has_value());
+}
+
+// A failed splice must not leave a half-rewritten history behind.
+TEST_F(SpliceTest, FailedSpliceLeavesTheCacheUntouched)
+{
+    MarketData md = market_data();
+    ASSERT_FALSE(md.prepend_equity_with_proxy(k_new_symbol, day(2024, 1, 8), k_old_symbol, chr::days(365)));
+    md.set_as_of(day(2024, 1, 8));
+
+    EXPECT_EQ(availability(md, day(2024, 1, 2), k_new_symbol), before_first_bar);
+    EXPECT_DOUBLE_EQ(bar(md, k_new_symbol, day(2024, 1, 3)).open, 10.0) << "the ramp-up bar is still there";
+    EXPECT_DOUBLE_EQ(actions(md, day(2024, 1, 4)).distribution_amount, 1.0);
 }
 
 } // namespace

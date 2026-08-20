@@ -97,6 +97,34 @@ void drop_after(vector<Row>& rows, chr::local_days as_of, DateOf date_of)
     rows.erase(ra::upper_bound(rows, as_of, {}, date_of), rows.end());
 }
 
+// The mirror image: drop the prefix dated before `first_kept`.
+template<class Row, class DateOf>
+void drop_before(vector<Row>& rows, chr::local_days first_kept, DateOf date_of)
+{
+    rows.erase(rows.begin(), ra::lower_bound(rows, first_kept, {}, date_of));
+}
+
+// The end of the prefix of `rows` dated before `day`.
+template<class Row, class DateOf>
+auto end_before(const vector<Row>& rows, chr::local_days day, DateOf date_of)
+{
+    return ra::lower_bound(rows, day, {}, date_of);
+}
+
+// Whether anything is dated exactly `day` in either event list.
+bool has_corporate_action(const EquityHistory& history, chr::local_days day)
+{
+    return ra::binary_search(history.distributions, day, {}, &Distribution::ex_date)
+        || ra::binary_search(history.splits, day, {}, &Split::ex_date);
+}
+
+// The bar dated exactly `day`, or nullptr.
+const DailyBar* bar_on(const EquityHistory& history, chr::local_days day)
+{
+    const auto bar = ra::lower_bound(history.bars, day, {}, &DailyBar::date);
+    return bar != history.bars.end() && bar->date == day ? &*bar : nullptr;
+}
+
 // The cached payload at `path`, parsed. nullopt when there is nothing cached --
 // which is not a failure, it is the state before the first download.
 //
@@ -485,4 +513,146 @@ expected<CorporateActions, string> MarketData::corporate_actions(string_view sym
         actions.distribution_amount += distribution.amount;
     }
     return actions;
+}
+
+expected<void, string> MarketData::prepend_equity_with_proxy(
+  string_view prepended_symbol,
+  chr::local_days prepended_symbol_as_of,
+  string_view proxy_symbol,
+  chr::days ignore_first_days
+)
+{
+    // The guard, and the reason it terminates rather than reporting: see MarketData.h.
+    CHECK(!as_of || prepended_symbol_as_of <= *as_of);
+
+    // Rejected here rather than falling out of the anchor search below, because the
+    // two histories would be the same cache entry and the splice would read the rows
+    // it is rewriting.
+    if (prepended_symbol == proxy_symbol) {
+        return unexpected(format("{}: cannot be its own proxy", prepended_symbol));
+    }
+
+    const auto prepended_loaded = equity(prepended_symbol, prepended_symbol_as_of);
+    if (!prepended_loaded) {
+        return unexpected(prepended_loaded.error());
+    }
+    const auto proxy_loaded = equity(proxy_symbol, prepended_symbol_as_of);
+    if (!proxy_loaded) {
+        return unexpected(proxy_loaded.error());
+    }
+    const EquityHistory& proxy = **proxy_loaded;
+
+    // Mutable access to what equity() just put in the cache. The map is node-based,
+    // so loading the proxy did not move the entry found here.
+    const auto entry = equities.find(prepended_symbol);
+    CHECK(entry != equities.end() && entry->second.history);
+    EquityHistory& prepended = *entry->second.history;
+
+    if (prepended.bars.empty()) {
+        return unexpected(format("{}: no bars at all", prepended_symbol));
+    }
+
+    // Everything below decides before anything is written, so a call that fails
+    // leaves the cache exactly as it found it.
+
+    const chr::local_days after_ramp_up = prepended.bars.front().date + ignore_first_days;
+    const auto ramped_up = ra::lower_bound(prepended.bars, after_ramp_up, {}, &DailyBar::date);
+    if (ramped_up == prepended.bars.end()) {
+        return unexpected(format(
+          "{}: no bars left after ignoring the first {} days from {}",
+          prepended_symbol,
+          ignore_first_days.count(),
+          prepended.bars.front().date
+        ));
+    }
+
+    // A day both traded and neither went ex on. An event on either side would put a
+    // price step into the splice that one day's opens cannot represent.
+    const DailyBar* anchor_bar = nullptr;
+    const DailyBar* anchor_proxy_bar = nullptr;
+    for (auto bar = ramped_up; bar != prepended.bars.end(); ++bar) {
+        const DailyBar* const proxy_bar = bar_on(proxy, bar->date);
+        if (proxy_bar != nullptr && !has_corporate_action(prepended, bar->date)
+            && !has_corporate_action(proxy, bar->date)) {
+            anchor_bar = &*bar;
+            anchor_proxy_bar = proxy_bar;
+            break;
+        }
+    }
+    if (anchor_bar == nullptr) {
+        return unexpected(format(
+          "{} and {}: no day between {} and {} on which both traded and neither went ex",
+          prepended_symbol,
+          proxy_symbol,
+          ramped_up->date,
+          prepended.bars.back().date
+        ));
+    }
+
+    const chr::local_days anchor = anchor_bar->date;
+    if (!(anchor_bar->open > 0.0) || !(anchor_proxy_bar->open > 0.0)) {
+        return unexpected(format(
+          "{} and {}: cannot scale from the opens on {}, {} and {}",
+          prepended_symbol,
+          proxy_symbol,
+          anchor,
+          anchor_bar->open,
+          anchor_proxy_bar->open
+        ));
+    }
+    const double price_factor = anchor_bar->open / anchor_proxy_bar->open;
+
+    const auto proxy_bars_end = end_before(proxy.bars, anchor, &DailyBar::date);
+    if (proxy_bars_end == proxy.bars.begin()) {
+        return unexpected(format("{}: no history before {} to prepend to {}", proxy_symbol, anchor, prepended_symbol));
+    }
+    const auto proxy_distributions_end = end_before(proxy.distributions, anchor, &Distribution::ex_date);
+    const auto proxy_splits_end = end_before(proxy.splits, anchor, &Split::ex_date);
+
+    vector<DailyBar> bars;
+    bars.reserve(static_cast<size_t>(proxy_bars_end - proxy.bars.begin()) + prepended.bars.size());
+    for (auto bar = proxy.bars.begin(); bar != proxy_bars_end; ++bar) {
+        bars.push_back(
+          DailyBar{
+            .date = bar->date,
+            .open = bar->open * price_factor,
+            .high = bar->high * price_factor,
+            .low = bar->low * price_factor,
+            .close = bar->close * price_factor,
+            // Not scaled: a volume is a share count, and these are the proxy's shares.
+            .volume = bar->volume,
+          }
+        );
+    }
+
+    vector<Distribution> distributions;
+    distributions.reserve(
+      static_cast<size_t>(proxy_distributions_end - proxy.distributions.begin()) + prepended.distributions.size()
+    );
+    for (auto distribution = proxy.distributions.begin(); distribution != proxy_distributions_end; ++distribution) {
+        // Quoted in the same units as the row it lands on, so it scales with them.
+        distributions.push_back(
+          Distribution{.ex_date = distribution->ex_date, .amount = distribution->amount * price_factor}
+        );
+    }
+
+    // Splits carry over untouched: a ratio has no units to scale, and the proxy's
+    // pre-anchor prices are on its own pre-split basis, which the copies above
+    // preserve. Uniform scaling leaves that internally consistent.
+    vector<Split> splits(proxy.splits.begin(), proxy_splits_end);
+    splits.reserve(splits.size() + prepended.splits.size());
+
+    drop_before(prepended.bars, anchor, &DailyBar::date);
+    drop_before(prepended.distributions, anchor, &Distribution::ex_date);
+    drop_before(prepended.splits, anchor, &Split::ex_date);
+
+    bars.insert(bars.end(), prepended.bars.begin(), prepended.bars.end());
+    distributions.insert(distributions.end(), prepended.distributions.begin(), prepended.distributions.end());
+    splits.insert(splits.end(), prepended.splits.begin(), prepended.splits.end());
+
+    prepended.bars = std::move(bars);
+    prepended.distributions = std::move(distributions);
+    prepended.splits = std::move(splits);
+
+    return {};
 }
