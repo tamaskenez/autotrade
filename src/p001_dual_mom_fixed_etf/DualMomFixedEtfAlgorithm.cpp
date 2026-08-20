@@ -141,6 +141,9 @@ do_all_assets_have_daily_bars(MarketData& market_data, const vector<string>& all
             if (b != DailyBarAvailability::after_last_bar && bar_avail != DailyBarAvailability::after_last_bar
                 && (b == DailyBarAvailability::before_first_bar || bar_avail == DailyBarAvailability::before_first_bar)) {
                 bar_avail = DailyBarAvailability::before_first_bar;
+                LOG(WARNING) << format(
+                  "Asset {} availability for day {}: {}", s, day, magic_enum::enum_name(bar_avail)
+                );
             } else {
                 return unexpected(format(
                   "Mixed data availability for day ({}): assets before {}: {} vs. {}: {}",

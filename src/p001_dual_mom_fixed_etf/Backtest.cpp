@@ -84,11 +84,17 @@ expected<chr::local_days, string> first_rebalance_day_of_month(
 }
 } // namespace
 
-expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac)
+expected<BacktestReport, string> run_backtest(
+  const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac, unique_ptr<MarketData> maybe_market_data
+)
 {
     constexpr auto k_initial_cash = 100000.0;
-    const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
-    auto market_data = MarketData(mdcfg, bc.provider);
+
+    if (!maybe_market_data) {
+        const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
+        maybe_market_data = make_unique<MarketData>(mdcfg, bc.provider);
+    }
+    auto& market_data = *maybe_market_data;
 
     vector<string> all_assets = ac.equities;
     all_assets.push_back(ac.defensive_asset);

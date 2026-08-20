@@ -16,4 +16,7 @@ struct BacktestConfig {
     chr::year_month start_month, end_month;
 };
 
-expected<BacktestReport, string> run_backtest(const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac);
+// If no market_date supplied, the backtest will create its own one.
+expected<BacktestReport, string> run_backtest(
+  const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac, unique_ptr<MarketData> maybe_market_data
+);

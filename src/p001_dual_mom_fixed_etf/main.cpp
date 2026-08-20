@@ -4,21 +4,76 @@
 
 #include <meadow/matlab.h>
 
+enum class Config {
+    in_sample,
+    validation,
+    out_of_sample,
+    custom
+};
+
+constexpr auto config = Config::in_sample;
+
 int main()
 {
     using namespace std::chrono_literals;
-    const auto bc = BacktestConfig{
-      .provider = Provider::tiingo, .start_month = 2004y / chr::January, .end_month = 2015y / chr::January
-    };
+
+    const vector<string> locked_equities = {"SPY", "EFA"};
+    const string locked_defensive_asset = "IEF";
+
+    vector<string> equities;
+    string defensive_asset;
+    chr::year_month start_month{}, end_month{};
+    bool locked_assets = false;
+
+    switch (config) {
+    case Config::in_sample:
+        locked_assets = true;
+        start_month = 1997y / chr::May;
+        end_month = 2013y / chr::January;
+        break;
+    case Config::validation:
+        start_month = 2013y / chr::January;
+        end_month = 2019y / chr::January;
+        break;
+    case Config::out_of_sample:
+        start_month = 2020y / chr::January;
+        end_month = 2026y / chr::August;
+        break;
+    case Config::custom:
+        equities = {"SPY", "EFA"};
+        defensive_asset = "IEF";
+        start_month = 2004y / chr::January;
+        end_month = 2015y / chr::January;
+        break;
+    }
+    if (locked_assets) {
+        equities = locked_equities;
+        defensive_asset = locked_defensive_asset;
+    }
+
+    const auto bc = BacktestConfig{.provider = Provider::tiingo, .start_month = start_month, .end_month = end_month};
     const auto ac = dual_mom_fixed_etf_algorithm::Config{
-      .equities = {"SPY", "EFA"},
-      .defensive_asset = "IEF",
+      .equities = equities,
+      .defensive_asset = defensive_asset,
       .cash_proxy = "DTB3",
       .lookback_period = chr::months(12),
       .rebalance_day = dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_month,
       .max_portfolio_size = 1
     };
-    const auto result = run_backtest(bc, ac);
+
+    unique_ptr<MarketData> market_data;
+    if (locked_assets) {
+        const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
+        market_data = make_unique<MarketData>(mdcfg, bc.provider);
+        TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
+          "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180)
+        ));
+        TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
+          "EFA", chr::local_days(end_month / chr::day(1)), "VGTSX", chr::days(180)
+        ));
+    }
+
+    const auto result = run_backtest(bc, ac, MOVE(market_data));
     if (!result) {
         println("ERROR: {}", result.error());
         return EXIT_FAILURE;
