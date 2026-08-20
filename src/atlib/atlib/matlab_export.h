@@ -14,7 +14,7 @@ namespace matlab_export
 NODIS string assign_date_axis(string_view var, span<const chr::local_days> local_days);
 
 // Print "$var = [ ... ]';"
-NODIS string assign_row_vector(string_view var, span<const double> values);
+NODIS string assign_column_vector(string_view var, span<const double> values);
 
 NODIS string assign_matrix(string_view var, const vector<vector<double>>& values);
 

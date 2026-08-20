@@ -31,7 +31,7 @@ string assign_date_axis(string_view var, span<const chr::local_days> local_days)
             last_ymd = ymd;
         }
     }
-    s += format("]';");
+    s += format("]';\n");
     s += format("{}_ticks={}';\n", var, tick_datenums);
     s += format("{}_labels=[", var);
     bool first = true;
@@ -47,7 +47,7 @@ string assign_date_axis(string_view var, span<const chr::local_days> local_days)
     return s;
 }
 
-string assign_row_vector(string_view var, span<const double> values)
+string assign_column_vector(string_view var, span<const double> values)
 {
     return format("{}={}';\n", var, values);
 }

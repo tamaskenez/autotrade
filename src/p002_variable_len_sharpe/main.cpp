@@ -11,16 +11,36 @@
 
 using namespace std::chrono_literals;
 
-static pair<vector<chr::local_days>, vector<double>> extract_local_days_and_prices(const EquityHistory& eh)
+struct OHLCVVectors {
+    vector<double> open, high, low, close, volume;
+    void reserve(size_t n)
+    {
+        open.reserve(n);
+        high.reserve(n);
+        low.reserve(n);
+        close.reserve(n);
+        volume.reserve(n);
+    }
+    void push_back(const DailyBar& b)
+    {
+        open.push_back(b.open);
+        high.push_back(b.high);
+        low.push_back(b.low);
+        close.push_back(b.close);
+        volume.push_back(b.volume);
+    }
+};
+
+static pair<vector<chr::local_days>, OHLCVVectors> extract_local_days_and_prices(const EquityHistory& eh)
 {
     const auto N = eh.bars.size();
     vector<chr::local_days> local_days;
-    vector<double> prices;
+    OHLCVVectors prices;
     local_days.reserve(N);
     prices.reserve(N);
     for (auto& b : eh.bars) {
         local_days.push_back(b.date);
-        prices.push_back(b.close);
+        prices.push_back(b);
     }
     return {MOVE(local_days), MOVE(prices)};
 }
@@ -41,14 +61,35 @@ expected<void, string> run()
     // Get adjusted price history.
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(auto eh, equity_history(mdcfg, provider, k_symbol, as_of));
     eh.adjust();
-    auto [local_days, prices] = extract_local_days_and_prices(eh);
+    auto [local_days, ohlcvvs] = extract_local_days_and_prices(eh);
 
+    const auto& prices = ohlcvvs.close;
     // Write out the history to MATLAB file.
     string s;
     s += matlab_export::assign_date_axis("days", local_days);
-    s += matlab_export::assign_row_vector("close", prices);
+    s += matlab_export::assign_column_vector("db_o", ohlcvvs.open);
+    s += matlab_export::assign_column_vector("db_h", ohlcvvs.high);
+    s += matlab_export::assign_column_vector("db_l", ohlcvvs.low);
+    s += matlab_export::assign_column_vector("db_c", ohlcvvs.close);
+    s += matlab_export::assign_column_vector("db_v", ohlcvvs.volume);
     s += "subplot(2, 1, 1);\n";
-    s += "plot(days, log(close)/log(2^(1/12))), grid;\n";
+    s += "l12 = log(2^(1/12));\n";
+    // o, c, o, c, ...
+    s += "db_oc = [db_o db_c]';\n";
+    s += "db_oc = db_oc(:);\n";
+    // o, h, c, o, h, c, ...
+    s += "db_ohc = [db_o db_h db_c]';\n";
+    s += "db_ohc = db_ohc(:);\n";
+    // o, l, c, o, l, c, ...
+    s += "db_olc = [db_o db_l db_c]';\n";
+    s += "db_olc = db_olc(:);\n";
+
+    s += "dd = [days days + 0.7]';\n";
+    s += "dd = dd(:);\n";
+    s += "ddd = [days days + 0.35 days + 0.7]';\n";
+    s += "ddd = ddd(:);\n";
+
+    s += "plot(dd, log(db_oc)/l12, ddd, log(db_ohc)/l12, ddd, log(db_olc)/l12), grid;\n";
     s += matlab_export::set_ticks_labels("days");
 
     const auto N = local_days.size();
