@@ -1,178 +1,160 @@
 #include "Backtest.h"
+#include "handle_single_report.h"
 
-#include "atlib/chrono.h"
+using namespace std::chrono_literals;
 
-#include <meadow/matlab.h>
-
-enum class Config {
-    in_sample,
-    validation,
-    out_of_sample,
-    custom
+enum class BacktestCommand {
+    single_custom,
+    single_default,
+    grid
 };
 
-constexpr auto config = Config::in_sample;
+enum class BacktestPeriod {
+    in_sample,
+    validation,
+    out_of_sample
+};
 
-int main()
+constexpr auto k_backtest_period = BacktestPeriod::in_sample;
+constexpr auto k_backtest_command = BacktestCommand::single_default;
+constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
+
+namespace
 {
-    using namespace std::chrono_literals;
+expected<BacktestReport, string> run_custom_backtest(
+  chr::year_month start_month, chr::year_month end_month, const dual_mom_fixed_etf_algorithm::Config& ac
+)
+{
+    const auto bc = BacktestConfig{
+      .broker_cost_scheme = k_broker_cost_scheme,
+      .provider = Provider::tiingo,
+      .start_month = start_month,
+      .end_month = end_month
+    };
+    return run_backtest(bc, ac, nullptr);
+}
 
-    const vector<string> locked_equities = {"SPY", "EFA"};
-    const string locked_defensive_asset = "IEF";
+enum class Universe {
+    all,
+    drop_efa,
+    drop_spy,
+    drop_ief
+};
 
-    vector<string> equities;
-    string defensive_asset;
+using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
+
+expected<BacktestReport, string>
+run_backtest_grid_cell(Universe universe, chr::months lookback_period, RebalanceDay rebelance_day)
+{
     chr::year_month start_month{}, end_month{};
-    bool locked_assets = false;
 
-    switch (config) {
-    case Config::in_sample:
-        locked_assets = true;
+    switch (k_backtest_period) {
+    case BacktestPeriod::in_sample:
         start_month = 1997y / chr::May;
         end_month = 2013y / chr::January;
         break;
-    case Config::validation:
+    case BacktestPeriod::validation:
         start_month = 2013y / chr::January;
         end_month = 2019y / chr::January;
         break;
-    case Config::out_of_sample:
+    case BacktestPeriod::out_of_sample:
         start_month = 2020y / chr::January;
         end_month = 2026y / chr::August;
         break;
-    case Config::custom:
-        equities = {"SPY", "EFA"};
-        defensive_asset = "IEF";
-        start_month = 2004y / chr::January;
-        end_month = 2015y / chr::January;
-        break;
-    }
-    if (locked_assets) {
-        equities = locked_equities;
-        defensive_asset = locked_defensive_asset;
     }
 
-    const auto bc = BacktestConfig{.provider = Provider::tiingo, .start_month = start_month, .end_month = end_month};
+    const auto bc = BacktestConfig{
+      .broker_cost_scheme = k_broker_cost_scheme,
+      .provider = Provider::tiingo,
+      .start_month = start_month,
+      .end_month = end_month
+    };
+
+    vector<string> equities;
+    string defensive_asset;
+
+    switch (universe) {
+    case Universe::all:
+        equities = {"SPY", "EFA"};
+        defensive_asset = "IEF";
+        break;
+    case Universe::drop_efa:
+        equities = {"SPY"};
+        defensive_asset = "IEF";
+        break;
+    case Universe::drop_spy:
+        equities = {"EFA"};
+        defensive_asset = "IEF";
+        break;
+    case Universe::drop_ief:
+        equities = {"SPY", "EFA"};
+        defensive_asset = "DTB3";
+        break;
+    }
+
     const auto ac = dual_mom_fixed_etf_algorithm::Config{
       .equities = equities,
       .defensive_asset = defensive_asset,
       .cash_proxy = "DTB3",
-      .lookback_period = chr::months(12),
-      .rebalance_day = dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_month,
+      .lookback_period = lookback_period,
+      .rebalance_day = rebelance_day,
       .max_portfolio_size = 1
     };
 
-    unique_ptr<MarketData> market_data;
-    if (locked_assets) {
-        const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
-        market_data = make_unique<MarketData>(mdcfg, bc.provider);
-        TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
-          "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180)
-        ));
-        TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
-          "EFA", chr::local_days(end_month / chr::day(1)), "VGTSX", chr::days(180)
-        ));
-    }
-
-    const auto result = run_backtest(bc, ac, MOVE(market_data));
-    if (!result) {
-        println("ERROR: {}", result.error());
-        return EXIT_FAILURE;
-    }
-
-    FILE* f = fopen("/tmp/result.m", "wt");
-    print(f, "day=[");
-    vector<double> tick_datenums;
-    vector<string> tick_labels;
-    const auto& ph = result->portfolio_history;
-    auto last_ymd = chr::year_month_day(ph.trading_days.front().date);
-    for (auto& td : ph.trading_days) {
-        const auto d = td.date;
-        print(f, " {}", matlab::datenum(d));
-        const auto ymd = chr::year_month_day(d);
-        if (ymd.year() != last_ymd.year() && ymd.month() == chr::month(1)) {
-            tick_datenums.push_back(matlab::datenum(d));
-            tick_labels.push_back(format("{}", ymd.year()));
-            last_ymd = ymd;
-        } else if (ymd.month() != last_ymd.month()) {
-            tick_datenums.push_back(matlab::datenum(d));
-            if ((static_cast<unsigned>(ymd.month()) - 1) % 3 == 0) {
-                tick_labels.push_back(format("{:%b}", ymd.month()));
-            } else {
-                tick_labels.emplace_back("|");
-            }
-            last_ymd = ymd;
-        }
-    }
-    println(f, "]';");
-    println(f, "tick_datenums={}';", tick_datenums);
-    print(f, "tick_labels=[");
-    bool first = true;
-    for (const auto& s : tick_labels) {
-        if (first) {
-            first = false;
-        } else {
-            print(f, "; ");
-        }
-        print(f, "'{}'", s);
-    }
-    println(f, "];");
-    println(f, "cash={}';", ph.cash_for_trading_days());
-    println(f, "total={}';", ph.total_for_trading_days());
-    for (const auto& k : ph.equity_position_values.keys()) {
-        println(f, "eq_{}={}';", k, ph.equity_position_values_for_trading_days(k));
-    }
-    print(f, "plot(day, total, ':'");
-    for (const auto& s : ph.equity_position_values.keys()) {
-        print(f, ", day, eq_{}", s);
-    }
-    println(f, "), grid");
-    print(f, "legend('total'");
-    for (const auto& s : ph.equity_position_values.keys()) {
-        print(f, ", '{}'", s);
-    }
-    println(f, ")");
-    println(f, "set(gca, 'xtick', tick_datenums);");
-    println(f, "set(gca, 'xticklabel', tick_labels);");
-    fclose(f);
-
-    println("==== REPORT ====");
-    const auto df = ph.trading_days.front().date;
-    const auto db = ph.trading_days.back().date;
-    const auto ymdf = chr::year_month_day(df);
-    const auto ymdb = chr::year_month_day(db);
-    println("Period: {} .. {}", df, db);
-    println(
-      "{} calendar days, {} months, {:.2f} years, {} trading days",
-      (db - df).count(),
-      (ymdb.year() / ymdb.month() - ymdf.year() / ymdf.month()) / chr::months(1),
-      years_between_days(df, db),
-      ph.trading_days.size()
+    const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
+    auto market_data = make_unique<MarketData>(mdcfg, bc.provider);
+    TRY_OR_FAIL(
+      market_data->prepend_equity_with_proxy("IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180))
     );
-    println("CAGR: {:.2f}%", 100 * ph.cagr());
-    auto [max_drawdown, longest_underwater_days] = ph.max_drawdown_and_longest_underwater_days();
-    println("max drawdown: {:.2f}%, longest underwater: {} days", 100 * max_drawdown, longest_underwater_days);
-    println("Num market orders: {}", ph.num_market_orders);
-    if (const auto N = result->rebalance_day_idcs.size(); N >= 2) {
-        const auto avg = ifcast<double>((ph.trading_days[result->rebalance_day_idcs.back()].date
-                                         - ph.trading_days[result->rebalance_day_idcs.front()].date)
-                                          .count())
-                       / ifcast<double>(N - 1);
-        println("Avg cal. days between rebal.: {:.2f}", avg);
-        const auto sh_da = ph.sharpe_daily(SharpeAggregation::arithmetic);
-        const auto sh_dg = ph.sharpe_daily(SharpeAggregation::geometric);
-        const auto sh_ma = ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, result->rebalance_day_idcs);
-        const auto sh_mg = ph.sharpe_through_selected_days(SharpeAggregation::geometric, result->rebalance_day_idcs);
-        println("+---------------+------------+-----------+");
-        println("|               | arithmetic | geometric |");
-        println("+---------------+------------+-----------+");
-        println("| Sharpe daily  | {:>10.2f} | {:>9.2f} |", sh_da, sh_dg);
-        println("| Sharpe rebal. | {:>10.2f} | {:>9.2f} |", sh_ma, sh_mg);
-        println("+---------------+------------+-----------+");
-    }
-    // Worst rolling 12-month:
-    if (const auto worst_return = ph.worst_12_month_return()) {
-        println("Worst 12-month return: {:.2f}%", 100 * *worst_return);
-    }
+    TRY_OR_FAIL(
+      market_data->prepend_equity_with_proxy("EFA", chr::local_days(end_month / chr::day(1)), "VGTSX", chr::days(180))
+    );
 
-    return 0;
+    return run_backtest(bc, ac, MOVE(market_data));
+}
+
+struct UniverseResult {
+};
+
+expected<UniverseResult, string> run_backtest_grid_for_universe(Universe universe)
+{
+    UniverseResult ur;
+    for (const auto lookback : {chr::months(6), chr::months(9), chr::months(12)}) {
+        for (const auto timing :
+             {RebalanceDay::first_trading_day_of_month, RebalanceDay::month_10th, RebalanceDay::month_15th}) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto result, run_backtest_grid_cell(universe, lookback, timing));
+            // TODO store result into ur.
+            (void)ur;
+        }
+    }
+    return {};
+}
+} // namespace
+
+int main()
+{
+    switch (k_backtest_command) {
+    case BacktestCommand::single_custom: {
+        const auto ac = dual_mom_fixed_etf_algorithm::Config{
+          .equities = {"SPY", "EFA"},
+          .defensive_asset = "IEF",
+          .cash_proxy = "DTB3",
+          .lookback_period = chr::months(12),
+          .rebalance_day = dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_month,
+          .max_portfolio_size = 1
+        };
+        return handle_single_report(run_custom_backtest(2004y / chr::January, 2015y / chr::January, ac));
+    }
+    case BacktestCommand::single_default: {
+        const auto result =
+          run_backtest_grid_cell(Universe::all, chr::months(12), RebalanceDay::last_trading_day_of_month);
+        return handle_single_report(result);
+    }
+    case BacktestCommand::grid: {
+        for (const auto universe : {Universe::all, Universe::drop_efa, Universe::drop_spy, Universe::drop_ief}) {
+            const auto ur = run_backtest_grid_for_universe(universe);
+        }
+        return 0;
+    }
+    }
 }
