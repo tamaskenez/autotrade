@@ -221,17 +221,29 @@ expected<BacktestReport, string> run_backtest(
               auto& tds = report.portfolio_history.trading_days;
               CHECK(!tds.empty() && tds.back().date == rebalance_day);
               report.rebalance_day_idcs.push_back(tds.size() - 1);
-              if (response.desired_portfolio == previous_desired_portfolio) {
-                  // println("[{}] -> {} NO CHANGE", past_trading_day, rebalance_day);
+              const bool portfolio_changed = response.desired_portfolio != previous_desired_portfolio;
+              previous_desired_portfolio = response.desired_portfolio;
+              TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+                auto market_orders,
+                market_orders_from_portfolio_change(
+                  bc.broker_cost_scheme, market_data, portfolio, response.desired_portfolio, rebalance_day
+                )
+              );
+              if (market_orders.empty()) {
+                  if (portfolio_changed) {
+                      assert(false);
+                      println("[{}] -> {} NO CHANGE despite changed portfolio.", past_trading_day, rebalance_day);
+                  } else if (abs(portfolio.cash) > k_min_cash_amount_to_trade) {
+                      println(
+                        "[{}] -> {} DIDN'T REINVEST {:.3f} cash", past_trading_day, rebalance_day, portfolio.cash
+                      );
+                  }
               } else {
-                  println("[{}] REBALANCE to {}", rebalance_day, response.desired_portfolio);
-                  previous_desired_portfolio = response.desired_portfolio;
-                  TRY_ASSIGN_OR_RETURN_UNEXPECTED(
-                    auto market_orders,
-                    market_orders_from_portfolio_change(
-                      bc.broker_cost_scheme, market_data, portfolio, response.desired_portfolio, rebalance_day
-                    )
-                  );
+                  if (portfolio_changed) {
+                      println("[{}] REBALANCE to {}", rebalance_day, response.desired_portfolio);
+                  } else {
+                      println("[{}] -> {} REINVEST {:.3f} cash", past_trading_day, rebalance_day, portfolio.cash);
+                  }
                   for (const auto& mo : market_orders) {
                       println(
                         "- {} {}: {:.3f} {}",

@@ -71,7 +71,8 @@ struct MarketOrder {
 // the close prices of `past_trading_day`.
 // Since the `desired_portfolio` is a list only, no weighting, the function assumes that we intend to hold those
 // equities in equal proportions.
-// Note: if there's no change in the list of assets, the assets won't be rebalanced to be equal in value.
+// Note leftover cash at or above k_min_cash_amount_to_trade triggers a full renormalization of the kept assets
+// not just a purchase
 class MarketData;
 
 expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(

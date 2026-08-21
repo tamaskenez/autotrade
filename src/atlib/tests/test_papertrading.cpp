@@ -135,6 +135,70 @@ TEST_F(PortfolioChangeTest, ProceedsOfADroppedHoldingAreReinvested)
     EXPECT_NEAR(after.cash, 0.0, 3 * k_min_cash_amount_to_trade) << describe(*os);
 }
 
+// ------------------------------------------------- cash without a basket change
+
+// Cash that arrives without the basket changing -- a dividend, most of the time.
+// Nothing is bought or sold outright here, so this is the one call whose whole
+// job is the leftover cash, and the round trip is the same one as everywhere
+// above: it has to be spent, and not more of it than there is.
+//
+// What it does *not* assert is that the basket comes out equal. Each leg needs
+// 4.99 shares, the rebalancing threshold declines a trade smaller than 0.5% of a
+// 1000-share position, and so the first pass rejects all three; the retry drops
+// one and hands its share to the other two. The cash lands, unevenly, in two legs
+// out of three. That is the threshold working as intended on a portfolio too
+// close to its target to be worth three orders, and pinning the split would pin
+// the threshold's value rather than this function's contract.
+TEST_F(PortfolioChangeTest, CashIsInvestedWhenTheBasketIsUnchanged)
+{
+    constexpr auto broker_scheme = BrokerCostScheme::flat_20bp;
+    prices = {
+      {"A", 100.0},
+      {"B", 100.0},
+      {"C", 100.0}
+    };
+
+    const auto before = Portfolio{
+      .cash = 1'500.0, .equities = {{"A", 1'000.0}, {"B", 1'000.0}, {"C", 1'000.0}}
+    };
+    const auto os = orders(broker_scheme, before, {"A", "B", "C"});
+    ASSERT_TRUE(os.has_value()) << os.error();
+    ASSERT_FALSE(os->empty()) << "the cash is worth investing and nothing else has to change for it to be";
+
+    const auto after = fill(before, *os, broker_scheme);
+    EXPECT_GE(after.cash, -k_min_cash_amount_to_trade) << "the orders spend money the portfolio does not have\n"
+                                                       << describe(*os);
+    EXPECT_NEAR(after.cash, 0.0, 2 * k_min_cash_amount_to_trade) << describe(*os);
+}
+
+// The other side of that, and the reason the case above cannot simply always
+// trade: a balance too small to place an order for is left where it is rather
+// than turned into orders that cost more than they move.
+//
+// Both amounts below reach that answer by a different road. The first is under
+// k_min_cash_amount_to_trade, so the call returns before pricing anything. The
+// second is over it -- the basket is unchanged, so the early return does not
+// apply and the whole scaling solve runs -- and comes back empty anyway, because
+// $5 spread over three $100,000 legs is far below the rebalancing threshold and
+// every order it proposes is rejected in turn.
+TEST_F(PortfolioChangeTest, CashTooSmallToInvestIsLeftAlone)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 100.0},
+      {"C", 100.0}
+    };
+
+    for (const double cash : {0.5, 5.0}) {
+        const auto before = Portfolio{
+          .cash = cash, .equities = {{"A", 1'000.0}, {"B", 1'000.0}, {"C", 1'000.0}}
+        };
+        const auto os = orders(BrokerCostScheme::flat_20bp, before, {"A", "B", "C"});
+        ASSERT_TRUE(os.has_value()) << os.error();
+        EXPECT_TRUE(os->empty()) << "$" << cash << " is not worth an order\n" << describe(*os);
+    }
+}
+
 // -------------------------------------------- issue 1: the scaling fixed point
 
 // One asset is added to a basket that is otherwise kept, so both legs have to be
@@ -167,7 +231,7 @@ TEST_F(PortfolioChangeTest, PartialRebalanceFundsTheTradingCost)
     EXPECT_NEAR(after.cash, 0.0, 3 * k_min_cash_amount_to_trade);
 }
 
-// The same shape, with one holding already at its target weight so the 1%
+// The same shape, with one holding already at its target weight so the
 // rebalancing threshold skips it.
 //
 // That skip is what separates this from the case above: the scaling loop divides

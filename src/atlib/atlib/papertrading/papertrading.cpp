@@ -139,8 +139,7 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
             assets_to_buy.push_back(s);
         }
     }
-    if (assets_to_buy.empty() && assets_to_sell.empty()) {
-        // Existing assets won't be renormalized in this case.
+    if (assets_to_buy.empty() && assets_to_sell.empty() && abs(current_portfolio.cash) < k_min_cash_amount_to_trade) {
         return {};
     }
 
@@ -205,7 +204,7 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
         a.shares_to_buy = (desired_trade_value_per_asset - current_trade_value) / a.close_price;
     }
 
-    constexpr double k_rebalance_threshold_factor = 0.01; // Don't rebalance assets if the change is minimal
+    constexpr double k_rebalance_threshold_factor = 0.005; // Don't rebalance assets if the change is minimal
 
     // We're going to iterate to find the best amount of shares to buy/sell to have zero cash left and the assets
     // are (approximately) equal in trade value.
