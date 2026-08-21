@@ -16,7 +16,7 @@ enum class BacktestPeriod {
 };
 
 constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::single_default;
+constexpr auto k_backtest_command = BacktestCommand::grid;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
 
 namespace
@@ -71,7 +71,7 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
     };
 
     vector<string> equities;
-    string defensive_asset;
+    optional<string> defensive_asset;
 
     switch (universe) {
     case Universe::all:
@@ -88,7 +88,7 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
         break;
     case Universe::drop_ief:
         equities = {"SPY", "EFA"};
-        defensive_asset = "DTB3";
+        defensive_asset.reset();
         break;
     }
 
@@ -153,6 +153,7 @@ int main()
     case BacktestCommand::grid: {
         for (const auto universe : {Universe::all, Universe::drop_efa, Universe::drop_spy, Universe::drop_ief}) {
             const auto ur = run_backtest_grid_for_universe(universe);
+            LOG_IF(FATAL, !ur) << format("run_backtest_grid_for_universe failed: {}", ur.error());
         }
         return 0;
     }

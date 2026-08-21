@@ -17,7 +17,7 @@ enum class RebalanceDay {
 
 struct Config {
     vector<string> equities;
-    string defensive_asset;
+    optional<string> defensive_asset; // If missing, the cash proxy will be the defensive asset.
 
     // The hurdle the equity legs have to beat, as a FRED series id -- DTB3 for
     // this project.
@@ -40,7 +40,7 @@ struct Config {
 };
 
 struct Response {
-    vector<string> desired_portfolio;
+    vector<string> desired_portfolio; // Empty means hold cash.
 };
 
 // An ordinary day on which nothing is due -- not a failure. `why` is for logging

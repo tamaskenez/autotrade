@@ -169,7 +169,7 @@ expected<void, string> validate(const Config& config)
     if (config.equities.empty()) {
         return unexpected("no equities specified");
     }
-    if (config.defensive_asset.empty()) {
+    if (config.defensive_asset && config.defensive_asset->empty()) {
         return unexpected("no defensive asset specified");
     }
     if (config.cash_proxy.empty()) {
@@ -354,7 +354,9 @@ get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, ch
         return unexpected(valid.error());
     }
     vector<string> all_assets = config.equities;
-    all_assets.push_back(config.defensive_asset);
+    if (config.defensive_asset) {
+        all_assets.push_back(*config.defensive_asset);
+    }
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
       const auto& bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_day)
     );
@@ -448,7 +450,9 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     }
     // All assets must have data on past_trading_day.
     vector<string> all_assets = config.equities;
-    all_assets.push_back(config.defensive_asset);
+    if (config.defensive_asset) {
+        all_assets.push_back(*config.defensive_asset);
+    }
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
       const auto& bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_trading_day)
     );
@@ -495,7 +499,11 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     equities_and_return_factors.erase(removed.begin(), removed.end());
 
     if (equities_and_return_factors.empty()) {
-        return Response{.desired_portfolio = {{config.defensive_asset}}};
+        vector<string> desired_portfolio;
+        if (config.defensive_asset) {
+            desired_portfolio.push_back(*config.defensive_asset);
+        }
+        return Response{.desired_portfolio = MOVE(desired_portfolio)};
     }
 
     // Descending by return factor, and *stable*, so equal factors keep the order

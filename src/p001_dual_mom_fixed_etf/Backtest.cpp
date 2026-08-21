@@ -97,7 +97,9 @@ expected<BacktestReport, string> run_backtest(
     auto& market_data = *maybe_market_data;
 
     vector<string> all_assets = ac.equities;
-    all_assets.push_back(ac.defensive_asset);
+    if (ac.defensive_asset) {
+        all_assets.push_back(*ac.defensive_asset);
+    }
     std::flat_map<string, double> asset_prices;
 
     CHECK(bc.start_month < bc.end_month);
@@ -107,7 +109,6 @@ expected<BacktestReport, string> run_backtest(
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
       const auto end_date, first_trading_day_of_month(market_data, bc.end_month, all_assets)
     );
-    vector<string> previous_desired_portfolio;
     auto portfolio = Portfolio{.cash = k_initial_cash};
     optional<vector<MarketOrder>> pending_market_orders;
     BacktestReport report;
@@ -139,8 +140,17 @@ expected<BacktestReport, string> run_backtest(
         report.portfolio_history.make_snapshot(past_trading_day, cash_proxy_level, portfolio, asset_prices);
         return {};
     };
-    const auto apply_corporate_actions =
-      [&portfolio, &market_data, &pending_market_orders](chr::local_days past_trading_day) -> expected<void, string> {
+    const auto apply_corporate_actions_and_dtb3 = [&portfolio, &market_data, &pending_market_orders, &ac, start_date](
+                                                    chr::local_days past_trading_day
+                                                  ) -> expected<void, string> {
+        // Apply DTB3 return factor on cash.
+        if (past_trading_day != start_date) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+              const auto cash_return_factor,
+              market_data.total_cash_return_factor(ac.cash_proxy, past_trading_day - chr::days(1), past_trading_day)
+            );
+            portfolio.cash *= cash_return_factor;
+        }
         // Apply corporate actions, both on portfolio and pending orders.
         for (auto&& [symbol, shares] : portfolio.equities) {
             TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& ca, market_data.corporate_actions(symbol, past_trading_day));
@@ -170,7 +180,7 @@ expected<BacktestReport, string> run_backtest(
     for (auto past_trading_day = start_date; past_trading_day <= end_date; ++past_trading_day) {
         market_data.set_as_of(past_trading_day);
 
-        TRY_OR_RETURN_UNEXPECTED(apply_corporate_actions(past_trading_day));
+        TRY_OR_RETURN_UNEXPECTED(apply_corporate_actions_and_dtb3(past_trading_day));
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           const bool trading_day, is_trading_day(market_data, past_trading_day, all_assets)
         );
@@ -221,29 +231,13 @@ expected<BacktestReport, string> run_backtest(
               auto& tds = report.portfolio_history.trading_days;
               CHECK(!tds.empty() && tds.back().date == rebalance_day);
               report.rebalance_day_idcs.push_back(tds.size() - 1);
-              const bool portfolio_changed = response.desired_portfolio != previous_desired_portfolio;
-              previous_desired_portfolio = response.desired_portfolio;
               TRY_ASSIGN_OR_RETURN_UNEXPECTED(
                 auto market_orders,
                 market_orders_from_portfolio_change(
                   bc.broker_cost_scheme, market_data, portfolio, response.desired_portfolio, rebalance_day
                 )
               );
-              if (market_orders.empty()) {
-                  if (portfolio_changed) {
-                      assert(false);
-                      println("[{}] -> {} NO CHANGE despite changed portfolio.", past_trading_day, rebalance_day);
-                  } else if (abs(portfolio.cash) > k_min_cash_amount_to_trade) {
-                      println(
-                        "[{}] -> {} DIDN'T REINVEST {:.3f} cash", past_trading_day, rebalance_day, portfolio.cash
-                      );
-                  }
-              } else {
-                  if (portfolio_changed) {
-                      println("[{}] REBALANCE to {}", rebalance_day, response.desired_portfolio);
-                  } else {
-                      println("[{}] -> {} REINVEST {:.3f} cash", past_trading_day, rebalance_day, portfolio.cash);
-                  }
+              if (!market_orders.empty()) {
                   for (const auto& mo : market_orders) {
                       println(
                         "- {} {}: {:.3f} {}",
