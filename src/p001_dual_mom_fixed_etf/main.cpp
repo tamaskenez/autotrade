@@ -1,4 +1,5 @@
 #include "Backtest.h"
+#include "GridReport.h"
 #include "handle_single_report.h"
 
 using namespace std::chrono_literals;
@@ -34,13 +35,6 @@ expected<BacktestReport, string> run_custom_backtest(
     return run_backtest(bc, ac, nullptr);
 }
 
-enum class Universe {
-    all,
-    drop_efa,
-    drop_spy,
-    drop_ief
-};
-
 using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
 
 expected<BacktestReport, string>
@@ -74,7 +68,7 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
     optional<string> defensive_asset;
 
     switch (universe) {
-    case Universe::all:
+    case Universe::full:
         equities = {"SPY", "EFA"};
         defensive_asset = "IEF";
         break;
@@ -113,21 +107,19 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
     return run_backtest(bc, ac, MOVE(market_data));
 }
 
-struct UniverseResult {
-};
-
 expected<UniverseResult, string> run_backtest_grid_for_universe(Universe universe)
 {
-    UniverseResult ur;
+    UniverseResult ur{.universe = universe};
     for (const auto lookback : {chr::months(6), chr::months(9), chr::months(12)}) {
         for (const auto timing :
-             {RebalanceDay::first_trading_day_of_month, RebalanceDay::month_10th, RebalanceDay::month_15th}) {
-            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto result, run_backtest_grid_cell(universe, lookback, timing));
+             {RebalanceDay::last_trading_day_of_month, RebalanceDay::month_10th, RebalanceDay::month_15th}) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(auto result, run_backtest_grid_cell(universe, lookback, timing));
             // TODO store result into ur.
-            (void)ur;
+            const auto key = GridKey{.timing = timing, .lookback = lookback};
+            ur.cells.emplace_back(key, MOVE(result));
         }
     }
-    return {};
+    return ur;
 }
 } // namespace
 
@@ -147,15 +139,18 @@ int main()
     }
     case BacktestCommand::single_default: {
         const auto result =
-          run_backtest_grid_cell(Universe::all, chr::months(12), RebalanceDay::last_trading_day_of_month);
+          run_backtest_grid_cell(Universe::full, chr::months(12), RebalanceDay::last_trading_day_of_month);
         return handle_single_report(result);
     }
     case BacktestCommand::grid: {
-        for (const auto universe : {Universe::all, Universe::drop_efa, Universe::drop_spy, Universe::drop_ief}) {
-            const auto ur = run_backtest_grid_for_universe(universe);
-            LOG_IF(FATAL, !ur) << format("run_backtest_grid_for_universe failed: {}", ur.error());
+        std::vector<UniverseResult> urs;
+        for (const auto universe : {Universe::full, Universe::drop_efa, Universe::drop_spy, Universe::drop_ief}) {
+            const auto ur_or = run_backtest_grid_for_universe(universe);
+            LOG_IF(FATAL, !ur_or) << format("run_backtest_grid_for_universe failed: {}", ur_or.error());
+            urs.emplace_back(MOVE(*ur_or));
         }
+        print_grid_report(urs);
         return 0;
-    }
-    }
-}
+    } // case BacktestCommand::grid:
+    } // switch
+} // function
