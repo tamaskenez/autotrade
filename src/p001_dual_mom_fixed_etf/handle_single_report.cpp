@@ -1,10 +1,16 @@
 #include "handle_single_report.h"
+#include "GridReport.h"
 
 #include "atlib/chrono.h"
 
 #include <meadow/matlab.h>
 
-int handle_single_report(const expected<BacktestReport, string>& result)
+int handle_single_report(
+  string_view universe,
+  string_view lookback,
+  dual_mom_fixed_etf_algorithm::RebalanceDay timing,
+  const expected<BacktestReport, string>& result
+)
 {
     if (!result) {
         println("ERROR: {}", result.error());
@@ -105,5 +111,13 @@ int handle_single_report(const expected<BacktestReport, string>& result)
     if (const auto worst_return = ph.worst_12_month_return()) {
         println("Worst 12-month return: {:.2f}%", 100 * *worst_return);
     }
+    for (auto&& [k, v] : result->num_days_with_dividends) {
+        println("{}: {} dividend days", k, v);
+    }
+    println();
+
+    println("==== CSV ====");
+    print_grid_report_as_csv({});
+    print_csv_report_line(universe, lookback, timing, *result);
     return EXIT_SUCCESS;
 }

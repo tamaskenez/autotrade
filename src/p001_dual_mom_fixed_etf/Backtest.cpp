@@ -146,9 +146,10 @@ expected<BacktestReport, string> run_backtest(
         report.portfolio_history.make_snapshot(past_trading_day, cash_proxy_level, portfolio, asset_prices);
         return {};
     };
-    const auto apply_corporate_actions_and_dtb3 = [&portfolio, &market_data, &pending_market_orders, &ac, start_date](
-                                                    chr::local_days past_trading_day
-                                                  ) -> expected<void, string> {
+    const auto apply_corporate_actions_and_dtb3 =
+      [&portfolio, &market_data, &pending_market_orders, &ac, start_date, &report](
+        chr::local_days past_trading_day
+      ) -> expected<void, string> {
         // Apply DTB3 return factor on cash.
         if (past_trading_day != start_date) {
             TRY_ASSIGN_OR_RETURN_UNEXPECTED(
@@ -158,6 +159,7 @@ expected<BacktestReport, string> run_backtest(
             portfolio.cash *= cash_return_factor;
         }
         // Apply corporate actions, both on portfolio and pending orders.
+        std::flat_map<string, int> dividends_paid;
         for (auto&& [symbol, shares] : portfolio.equities) {
             TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& ca, market_data.corporate_actions(symbol, past_trading_day));
             shares *= ca.split_factor;
@@ -165,6 +167,13 @@ expected<BacktestReport, string> run_backtest(
             // dividends are paid weeks later which creates a slight advantage of the backtesting compared to live
             // trading.
             portfolio.cash += ca.distribution_amount * shares;
+            CHECK(ca.distribution_amount >= 0);
+            if (ca.distribution_amount > 0) {
+                dividends_paid[symbol] = 1;
+            }
+        }
+        for (const auto& s : dividends_paid.keys()) {
+            ++report.num_days_with_dividends[s];
         }
         if (pending_market_orders) {
             for (auto& mo : *pending_market_orders) {
@@ -206,6 +215,33 @@ expected<BacktestReport, string> run_backtest(
                 );
                 report.portfolio_history.num_market_orders += iicast<int>(pending_market_orders->size());
                 pending_market_orders.reset();
+                // Track portfolio changes.
+                {
+                    bool portfolio_changed = false;
+                    for (auto&& [s, q] : portfolio.equities) {
+                        const bool had = q != 0;
+                        auto it = response.portfolio.equities.find(s);
+                        const bool has = it != response.portfolio.equities.end() && it->second != 0;
+                        if (has != had) {
+                            portfolio_changed = true;
+                            break;
+                        }
+                    }
+                    if (!portfolio_changed) {
+                        for (auto&& [s, q] : response.portfolio.equities) {
+                            const bool had = q != 0;
+                            auto it = portfolio.equities.find(s);
+                            const bool has = it != portfolio.equities.end() && it->second != 0;
+                            if (has != had) {
+                                portfolio_changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (portfolio_changed) {
+                        ++report.portfolio_history.num_portfolio_changes;
+                    }
+                }
                 portfolio = response.portfolio;
                 println("Portfolio after rebalance:");
                 for (auto&& [symbol, q] : portfolio.equities) {

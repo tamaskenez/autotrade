@@ -20,7 +20,7 @@ enum class BacktestPeriod {
 };
 
 constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::single_default;
+constexpr auto k_backtest_command = BacktestCommand::benchmark_60_40;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
 constexpr auto k_provider = Provider::tiingo;
 
@@ -181,12 +181,17 @@ int main()
           .rebalance_day = dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_month,
           .max_portfolio_size = 1
         };
-        return handle_single_report(run_custom_backtest(2004y / chr::January, 2015y / chr::January, ac));
+        const auto lookback = switch_variant(ac.lookback_period, [](auto x) {
+            return format("{}", x);
+        });
+        return handle_single_report(
+          "CUSTOM", lookback, ac.rebalance_day, run_custom_backtest(2004y / chr::January, 2015y / chr::January, ac)
+        );
     }
     case BacktestCommand::single_default: {
         const auto result =
           run_backtest_grid_cell(Universe::full, chr::months(12), RebalanceDay::last_trading_day_of_month);
-        return handle_single_report(result);
+        return handle_single_report("FULL", "12", RebalanceDay::last_trading_day_of_month, result);
     }
     case BacktestCommand::grid: {
         std::vector<UniverseResult> urs;
@@ -199,10 +204,14 @@ int main()
         return 0;
     }
     case BacktestCommand::benchmark_spy: {
-        return handle_single_report(run_benchmark(BenchmarkType::spy));
+        return handle_single_report(
+          "BENCH_SPY", "n/a", RebalanceDay::last_trading_day_of_month, run_benchmark(BenchmarkType::spy)
+        );
     }
     case BacktestCommand::benchmark_60_40: {
-        return handle_single_report(run_benchmark(BenchmarkType::spy_60_ief_40));
+        return handle_single_report(
+          "BENCH_6040", "n/a", RebalanceDay::last_trading_day_of_month, run_benchmark(BenchmarkType::spy_60_ief_40)
+        );
     }
     } // switch
 } // function

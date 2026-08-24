@@ -61,4 +61,5 @@ struct PortfolioHistory {
     std::flat_map<string, AppendableIntervals<size_t, double>> equity_position_values;
 
     int num_market_orders = 0;
+    int num_portfolio_changes = 0;
 };

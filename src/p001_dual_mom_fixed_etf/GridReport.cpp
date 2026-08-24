@@ -5,6 +5,7 @@
 namespace
 {
 using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
+
 string toupper(string_view s)
 {
     string result(s);
@@ -13,6 +14,7 @@ string toupper(string_view s)
     }
     return result;
 }
+
 // Print a 4x4 ascii table:
 // - print `top_left` in the top-left cell
 // - the remaining 3 cells of the first row are: "look6", "look9", "look12"
@@ -69,7 +71,7 @@ void print_grid_report(const vector<UniverseResult>& urs)
             for (const auto timing :
                  {RebalanceDay::last_trading_day_of_month, RebalanceDay::month_10th, RebalanceDay::month_15th}) {
                 for (const auto lookback : {chr::months(6), chr::months(9), chr::months(12)}) {
-                    UNUSED const auto key = GridKey{.timing = timing, .lookback = lookback};
+                    const auto key = GridKey{.timing = timing, .lookback = lookback};
                     auto it = ra::find(ur.cells, key, &pair<GridKey, BacktestReport>::first);
                     CHECK(it != ur.cells.end());
                     double v = NAN;
@@ -86,7 +88,7 @@ void print_grid_report(const vector<UniverseResult>& urs)
                           ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, it->second.rebalance_day_idcs);
                         break;
                     case Value::worst_rolling_12:
-                        v = ph.worst_12_month_return().value_or(NAN);
+                        v = 100 * ph.worst_12_month_return().value_or(NAN);
                         break;
                     case Value::trade_count:
                         v = ph.num_market_orders;
@@ -98,5 +100,61 @@ void print_grid_report(const vector<UniverseResult>& urs)
             print_report_table(top_left(ev), xs);
         }
         println();
+    }
+}
+
+namespace
+{
+const char* timing_for_csv(RebalanceDay timing)
+{
+    switch (timing) {
+    case RebalanceDay::first_trading_day_of_month:
+        return "day1";
+    case RebalanceDay::last_trading_day_of_month:
+        return "month_end";
+    case RebalanceDay::first_trading_day_of_week:
+        return "week1";
+    case RebalanceDay::last_trading_day_of_week:
+        return "week_end";
+    case RebalanceDay::month_10th:
+        return "day10";
+    case RebalanceDay::month_15th:
+        return "day15";
+    }
+    std::unreachable();
+}
+} // namespace
+
+void print_csv_report_line(string_view universe, string_view lookback, RebalanceDay timing, const BacktestReport& br)
+{
+    const auto& ph = br.portfolio_history;
+    println(
+      "{},{},{},{:.2f},{:.2f},{:.2f},{:.2f},{},{}",
+      universe,
+      lookback,
+      timing_for_csv(timing),
+      100 * ph.cagr(),
+      100 * ph.max_drawdown_and_longest_underwater_days().first,
+      ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, br.rebalance_day_idcs),
+      100 * ph.worst_12_month_return().value_or(NAN),
+      ph.num_market_orders,
+      ph.num_portfolio_changes
+    );
+}
+
+void print_grid_report_as_csv(const vector<UniverseResult>& urs)
+{
+    println("universe,lookback,timing,cagr,maxdd,sharpe,worst12m,trades,switches");
+    for (const auto& ur : urs) {
+        const auto universe = toupper(magic_enum::enum_name(ur.universe));
+        for (const auto lookback : {chr::months(6), chr::months(9), chr::months(12)}) {
+            for (const auto timing :
+                 {RebalanceDay::last_trading_day_of_month, RebalanceDay::month_10th, RebalanceDay::month_15th}) {
+                const auto key = GridKey{.timing = timing, .lookback = lookback};
+                auto it = ra::find(ur.cells, key, &pair<GridKey, BacktestReport>::first);
+                CHECK(it != ur.cells.end());
+                print_csv_report_line(universe, std::to_string(lookback.count()), timing, it->second);
+            }
+        }
     }
 }

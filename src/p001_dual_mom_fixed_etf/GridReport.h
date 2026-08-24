@@ -25,3 +25,10 @@ struct UniverseResult {
 };
 
 void print_grid_report(const vector<UniverseResult>& urs);
+void print_grid_report_as_csv(const vector<UniverseResult>& urs);
+void print_csv_report_line(
+  string_view universe,
+  string_view lookback,
+  dual_mom_fixed_etf_algorithm::RebalanceDay timing,
+  const BacktestReport& br
+);
