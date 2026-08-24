@@ -80,7 +80,7 @@ expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
     auto market_data = make_unique<MarketData>(mdcfg, bc.provider);
 
     for (auto& e : get_all_assets(benchmark_type)) {
-        if (e == "EIF") {
+        if (e == "IEF") {
             TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
               "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180)
             ));
@@ -210,13 +210,10 @@ int main()
         return 0;
     }
     case BacktestCommand::benchmark_spy: {
-        const auto r = run_benchmark(BenchmarkType::spy);
-        LOG_IF(FATAL, !r) << r.error();
-        return 0;
+        return handle_single_report(run_benchmark(BenchmarkType::spy));
     }
     case BacktestCommand::benchmark_60_40: {
-        const auto r = run_benchmark(BenchmarkType::spy_60_ief_40);
-        LOG_IF(FATAL, !r) << r.error();
+        return handle_single_report(run_benchmark(BenchmarkType::spy_60_ief_40));
     }
     } // switch
 } // function
