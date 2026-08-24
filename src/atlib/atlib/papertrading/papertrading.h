@@ -53,6 +53,8 @@ double estimate_total_cash_needed_when_buying_equity_for_shares(
   BrokerCostScheme scheme, double num_shares, double price_quote
 );
 
+vector<pair<string, double>> make_uniformly_weighted_portfolio(vector<string> desired_portfolio);
+
 struct MarketOrder {
     string symbol;
 
@@ -79,7 +81,7 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   BrokerCostScheme broker_scheme,
   MarketData& market_data,
   const Portfolio& current_portfolio,
-  const vector<string>& desired_portfolio,
+  vector<string> desired_portfolio,
   chr::local_days past_trading_day
 );
 
@@ -89,7 +91,22 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   BrokerCostScheme broker_scheme,
   const std::flat_map<string, double>& asset_prices,
   const Portfolio& current_portfolio,
-  const vector<string>& desired_portfolio
+  vector<string> desired_portfolio
+);
+
+// Same functions with weighted portfolio. Weights don't need to sum to 1.
+expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
+  BrokerCostScheme broker_scheme,
+  MarketData& market_data,
+  const Portfolio& current_portfolio,
+  const vector<pair<string, double>>& desired_portfolio,
+  chr::local_days past_trading_day
+);
+expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
+  BrokerCostScheme broker_scheme,
+  const std::flat_map<string, double>& asset_prices,
+  const Portfolio& current_portfolio,
+  const vector<pair<string, double>>& desired_portfolio
 );
 
 struct ApplyMarketOrdersResult {

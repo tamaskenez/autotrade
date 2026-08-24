@@ -4,6 +4,8 @@
 
 #include <meadow/math.h>
 
+#include "meadow/matlab.h"
+
 namespace
 {
 struct BrokerCostConfig {
@@ -79,7 +81,7 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   BrokerCostScheme broker_scheme,
   MarketData& market_data,
   const Portfolio& current_portfolio,
-  const vector<string>& desired_portfolio,
+  vector<string> desired_portfolio,
   chr::local_days past_trading_day
 )
 {
@@ -89,6 +91,30 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
         result[s] = daily_bar.close;
     }
     for (const auto& s : desired_portfolio) {
+        if (!result.contains(s)) {
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& daily_bar, market_data.daily_bar(s, past_trading_day));
+            result[s] = daily_bar.close;
+        }
+    }
+    return market_orders_from_portfolio_change(
+      broker_scheme, result, current_portfolio, make_uniformly_weighted_portfolio(MOVE(desired_portfolio))
+    );
+}
+
+expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
+  BrokerCostScheme broker_scheme,
+  MarketData& market_data,
+  const Portfolio& current_portfolio,
+  const vector<pair<string, double>>& desired_portfolio,
+  chr::local_days past_trading_day
+)
+{
+    auto result = std::flat_map<string, double>();
+    for (const auto& s : current_portfolio.equities.keys()) {
+        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& daily_bar, market_data.daily_bar(s, past_trading_day));
+        result[s] = daily_bar.close;
+    }
+    for (const auto& [s, _] : desired_portfolio) {
         if (!result.contains(s)) {
             TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& daily_bar, market_data.daily_bar(s, past_trading_day));
             result[s] = daily_bar.close;
@@ -110,13 +136,36 @@ expected<double, string> asset_price_lookup(const std::flat_map<string, double>&
     }
     return it->second;
 }
+
 } // namespace
+
+vector<pair<string, double>> make_uniformly_weighted_portfolio(vector<string> desired_portfolio)
+{
+    vector<pair<string, double>> desired_portfolio_with_weights;
+    desired_portfolio_with_weights.reserve(desired_portfolio.size());
+    for (auto& s : desired_portfolio) {
+        desired_portfolio_with_weights.emplace_back(MOVE(s), 1.0);
+    }
+    return desired_portfolio_with_weights;
+}
 
 expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   BrokerCostScheme broker_scheme,
   const std::flat_map<string, double>& asset_prices,
   const Portfolio& current_portfolio,
-  const vector<string>& desired_portfolio
+  vector<string> desired_portfolio
+)
+{
+    return market_orders_from_portfolio_change(
+      broker_scheme, asset_prices, current_portfolio, make_uniformly_weighted_portfolio(MOVE(desired_portfolio))
+    );
+}
+
+expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
+  BrokerCostScheme broker_scheme,
+  const std::flat_map<string, double>& asset_prices,
+  const Portfolio& current_portfolio,
+  const vector<pair<string, double>>& desired_portfolio
 )
 {
     // Determine the 3 sets of equities, (A - B), (B - A) and (A intersection B).
@@ -128,13 +177,13 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
             continue;
         }
         CHECK(q > 0); // Short positions are not handled for now.
-        if (ra::find(desired_portfolio, symbol) == desired_portfolio.end()) {
+        if (ra::find(desired_portfolio, symbol, &pair<string, double>::first) == desired_portfolio.end()) {
             assets_to_sell.push_back(symbol);
         } else {
             assets_to_keep.push_back(symbol);
         }
     }
-    for (const auto& s : desired_portfolio) {
+    for (const auto& [s, _] : desired_portfolio) {
         if (auto it = current_portfolio.equities.find(s); it == current_portfolio.equities.end() || it->second == 0) {
             assets_to_buy.push_back(s);
         }
@@ -165,8 +214,9 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
 
     struct AssetChange {
         double current_stock = 0.0;
-        double close_price = 0.0;
-        double shares_to_buy = 0.0;
+        double close_price = NAN;
+        double shares_to_buy = NAN;
+        double desired_asset_trade_value = NAN;
     };
     std::flat_map<string, AssetChange> assets_to_buy_and_sell;
 
@@ -195,13 +245,24 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(assets_to_buy_and_sell[s].close_price, asset_price_lookup(asset_prices, s));
     }
 
-    const double desired_trade_value_per_asset =
-      final_trade_value_of_desired_assets / ifcast<double>(assets_to_buy_and_sell.size());
+    {
+        const double sum_desired_assets_weights =
+          ra::fold_left(desired_portfolio, 0.0, [](double x, const pair<string, double>& y) {
+              return x + y.second;
+          });
+        CHECK(std::isfinite(sum_desired_assets_weights) && sum_desired_assets_weights > 0);
+        const double unit_weight_value = final_trade_value_of_desired_assets / sum_desired_assets_weights;
+        for (const auto& [s, w] : desired_portfolio) {
+            auto it = assets_to_buy_and_sell.find(s);
+            CHECK(it != assets_to_buy_and_sell.end());
+            it->second.desired_asset_trade_value = w * unit_weight_value;
+        }
+    }
 
     // Create an initial guess of how many shares we need to buy/sell.
     for (auto&& [_, a] : assets_to_buy_and_sell) {
         const double current_trade_value = a.current_stock * a.close_price;
-        a.shares_to_buy = (desired_trade_value_per_asset - current_trade_value) / a.close_price;
+        a.shares_to_buy = (a.desired_asset_trade_value - current_trade_value) / a.close_price;
     }
 
     constexpr double k_rebalance_threshold_factor = 0.005; // Don't rebalance assets if the change is minimal

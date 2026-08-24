@@ -1,5 +1,6 @@
 #include "Backtest.h"
 #include "GridReport.h"
+#include "benchmarks.h"
 #include "handle_single_report.h"
 
 using namespace std::chrono_literals;
@@ -7,7 +8,9 @@ using namespace std::chrono_literals;
 enum class BacktestCommand {
     single_custom,
     single_default,
-    grid
+    grid,
+    benchmark_spy,
+    benchmark_60_40
 };
 
 enum class BacktestPeriod {
@@ -17,8 +20,9 @@ enum class BacktestPeriod {
 };
 
 constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::grid;
+constexpr auto k_backtest_command = BacktestCommand::single_default;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
+constexpr auto k_provider = Provider::tiingo;
 
 namespace
 {
@@ -28,7 +32,7 @@ expected<BacktestReport, string> run_custom_backtest(
 {
     const auto bc = BacktestConfig{
       .broker_cost_scheme = k_broker_cost_scheme,
-      .provider = Provider::tiingo,
+      .provider = k_provider,
       .start_month = start_month,
       .end_month = end_month
     };
@@ -36,6 +40,59 @@ expected<BacktestReport, string> run_custom_backtest(
 }
 
 using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
+
+expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
+{
+    chr::year_month start_month{}, end_month{};
+
+    switch (k_backtest_period) {
+    case BacktestPeriod::in_sample:
+        start_month = 1997y / chr::May;
+        end_month = 2013y / chr::January;
+        break;
+    case BacktestPeriod::validation:
+        start_month = 2013y / chr::January;
+        end_month = 2019y / chr::January;
+        break;
+    case BacktestPeriod::out_of_sample:
+        start_month = 2020y / chr::January;
+        end_month = 2026y / chr::August;
+        break;
+    }
+
+    const auto bc = BacktestConfig{
+      .broker_cost_scheme = k_broker_cost_scheme,
+      .provider = k_provider,
+      .start_month = start_month,
+      .end_month = end_month
+    };
+
+    const auto ac = dual_mom_fixed_etf_algorithm::Config{
+      .equities = get_all_assets(benchmark_type), // Used only for determining trading days.
+      .defensive_asset = nullopt,
+      .cash_proxy = "DTB3",
+      .lookback_period = chr::days(1), // Not used here.
+      .rebalance_day = RebalanceDay::last_trading_day_of_month,
+      .max_portfolio_size = 1 // Not used here.
+    };
+
+    const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
+    auto market_data = make_unique<MarketData>(mdcfg, bc.provider);
+
+    for (auto& e : get_all_assets(benchmark_type)) {
+        if (e == "EIF") {
+            TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
+              "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180)
+            ));
+        } else if (e == "SPY") {
+            // Nothing to do.
+        } else {
+            LOG(FATAL) << format("Unexpected equity: {}", e);
+        }
+    }
+
+    return run_backtest(bc, ac, MOVE(market_data), benchmark_type);
+}
 
 expected<BacktestReport, string>
 run_backtest_grid_cell(Universe universe, chr::months lookback_period, RebalanceDay rebelance_day)
@@ -59,7 +116,7 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
 
     const auto bc = BacktestConfig{
       .broker_cost_scheme = k_broker_cost_scheme,
-      .provider = Provider::tiingo,
+      .provider = k_provider,
       .start_month = start_month,
       .end_month = end_month
     };
@@ -151,6 +208,15 @@ int main()
         }
         print_grid_report(urs);
         return 0;
-    } // case BacktestCommand::grid:
+    }
+    case BacktestCommand::benchmark_spy: {
+        const auto r = run_benchmark(BenchmarkType::spy);
+        LOG_IF(FATAL, !r) << r.error();
+        return 0;
+    }
+    case BacktestCommand::benchmark_60_40: {
+        const auto r = run_benchmark(BenchmarkType::spy_60_ief_40);
+        LOG_IF(FATAL, !r) << r.error();
+    }
     } // switch
 } // function

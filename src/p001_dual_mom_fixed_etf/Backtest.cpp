@@ -4,10 +4,13 @@
 
 #include <magic_enum/magic_enum.hpp>
 
+#include "benchmarks.h"
 #include "meadow/math.h"
 
 namespace
 {
+constexpr auto k_initial_cash = 100000.0;
+
 expected<bool, string> is_trading_day(MarketData& market_data, chr::local_days day, const vector<string>& symbols)
 {
     // Find out if this is a trading day. If it is, we act as if the exchange was about to open and we
@@ -85,11 +88,12 @@ expected<chr::local_days, string> first_rebalance_day_of_month(
 } // namespace
 
 expected<BacktestReport, string> run_backtest(
-  const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac, unique_ptr<MarketData> maybe_market_data
+  const BacktestConfig& bc,
+  const dual_mom_fixed_etf_algorithm::Config& ac,
+  unique_ptr<MarketData> maybe_market_data,
+  optional<BenchmarkType> benchmark_type
 )
 {
-    constexpr auto k_initial_cash = 100000.0;
-
     if (!maybe_market_data) {
         const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
         maybe_market_data = make_unique<MarketData>(mdcfg, bc.provider);
@@ -224,9 +228,15 @@ expected<BacktestReport, string> run_backtest(
               if (pending_market_orders) {
                   return unexpected("Pending market orders should be cleared before rebalancing.");
               }
-              TRY_ASSIGN_OR_RETURN_UNEXPECTED(
-                const auto& response, dual_mom_fixed_etf_algorithm::rebalance(market_data, ac, rebalance_day)
-              );
+              vector<pair<string, double>> desired_portfolio;
+              if (benchmark_type) {
+                  desired_portfolio = get_benchmark_portfolio(*benchmark_type);
+              } else {
+                  TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+                    auto response, dual_mom_fixed_etf_algorithm::rebalance(market_data, ac, rebalance_day)
+                  );
+                  desired_portfolio = make_uniformly_weighted_portfolio(MOVE(response.desired_portfolio));
+              }
               // Even if the rebalance day is not today, it must have been the last trade day.
               auto& tds = report.portfolio_history.trading_days;
               CHECK(!tds.empty() && tds.back().date == rebalance_day);
@@ -234,7 +244,7 @@ expected<BacktestReport, string> run_backtest(
               TRY_ASSIGN_OR_RETURN_UNEXPECTED(
                 auto market_orders,
                 market_orders_from_portfolio_change(
-                  bc.broker_cost_scheme, market_data, portfolio, response.desired_portfolio, rebalance_day
+                  bc.broker_cost_scheme, market_data, portfolio, desired_portfolio, rebalance_day
                 )
               );
               if (!market_orders.empty()) {
