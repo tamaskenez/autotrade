@@ -10,4 +10,4 @@ enum class BenchmarkType {
 // Return weighted portfolio.
 NODIS vector<pair<string, double>> get_benchmark_portfolio(BenchmarkType benchmark_type);
 
-vector<string> get_all_assets(BenchmarkType benchmark_type);
+NODIS vector<string> get_benchmark_assets(BenchmarkType benchmark_type);

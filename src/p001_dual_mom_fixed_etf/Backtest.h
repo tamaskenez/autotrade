@@ -6,8 +6,6 @@
 #include "atlib/marketdata/MarketData.h"
 #include "atlib/papertrading/papertrading.h"
 
-#include "benchmarks.h"
-
 struct BacktestConfig {
     BrokerCostScheme broker_cost_scheme;
     Provider provider;
@@ -21,5 +19,5 @@ expected<BacktestReport, string> run_backtest(
   const BacktestConfig& bc,
   const dual_mom_fixed_etf_algorithm::Config& ac,
   unique_ptr<MarketData> maybe_market_data,
-  optional<BenchmarkType> benchmark_type = nullopt
+  const optional<vector<pair<string, double>>>& fixed_portfolio = nullopt // For benchmarks.
 );

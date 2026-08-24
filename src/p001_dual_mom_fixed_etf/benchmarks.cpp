@@ -8,9 +8,10 @@ vector<pair<string, double>> get_benchmark_portfolio(BenchmarkType benchmark_typ
     case BenchmarkType::spy_60_ief_40:
         return {pair("SPY", 60.0), pair("IEF", 40.0)};
     }
+    std::unreachable();
 }
 
-vector<string> get_all_assets(BenchmarkType benchmark_type)
+vector<string> get_benchmark_assets(BenchmarkType benchmark_type)
 {
     const auto bp = get_benchmark_portfolio(benchmark_type);
     vector<string> result;

@@ -43,6 +43,12 @@ protected:
         return market_orders_from_portfolio_change(scheme, prices, before, desired);
     }
 
+    expected<vector<MarketOrder>, string>
+    orders(BrokerCostScheme scheme, const Portfolio& before, const vector<pair<string, double>>& desired) const
+    {
+        return market_orders_from_portfolio_change(scheme, prices, before, desired);
+    }
+
     // Fills `os` at the prices the orders were priced with, paying what the
     // estimators say each fill costs. Anything left over is therefore the
     // function's own inconsistency and not a second opinion about trading costs.
@@ -463,6 +469,237 @@ TEST_F(PortfolioChangeTest, ScalingSolveIsExactAcrossTheSamplingWindow)
     EXPECT_GE(worst_cash, -k_min_cash_amount_to_trade)
       << "worst at B = " << worst_b_shares << " shares, where the orders spend " << -worst_cash
       << " more than the portfolio has";
+}
+
+// ----------------------------------------------------------- weighted baskets
+
+// The share of the whole basket's value sitting in one symbol. That is what a
+// weight names -- the weights divided by their sum -- and so it is what these
+// tests assert, rather than the share counts, which depend on the prices.
+double value_fraction(const Portfolio& portfolio, string_view symbol, const std::flat_map<string, double>& prices)
+{
+    double total = 0.0;
+    double of_symbol = 0.0;
+    for (auto&& [s, shares] : portfolio.equities) {
+        const double value = shares * prices.at(s);
+        total += value;
+        if (s == symbol) {
+            of_symbol = value;
+        }
+    }
+    return of_symbol / total;
+}
+
+// The control, and the one thing the weights have to mean: the basket comes out
+// split in their proportion and the cash is still fully spent.
+//
+// Said three ways because the header promises the weights need not sum to 1, so
+// only their ratio may reach the orders. If any of the three disagreed, the
+// weights would be being read as fractions of the portfolio by one caller and as
+// bare numbers by another, and a benchmark's allocation would depend on which
+// convention its author happened to pick.
+TEST_F(PortfolioChangeTest, WeightsSplitTheBasketInProportion)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 40.0 }
+    };
+
+    for (const auto& desired : {
+           vector<pair<string, double>>{{"A", 60.0}, {"B", 40.0}},
+           vector<pair<string, double>>{{"A", 0.6},  {"B", 0.4} },
+           vector<pair<string, double>>{{"A", 3.0},  {"B", 2.0} },
+    }) {
+        const auto before = Portfolio{.cash = 100'000.0};
+        const auto os = orders(BrokerCostScheme::flat_10bp, before, desired);
+        ASSERT_TRUE(os.has_value()) << os.error();
+
+        const auto after = fill(before, *os, BrokerCostScheme::flat_10bp);
+        EXPECT_NEAR(after.cash, 0.0, 2 * k_min_cash_amount_to_trade) << describe(*os);
+        EXPECT_NEAR(value_fraction(after, "A", prices), 0.6, 1e-6)
+          << "weights " << desired[0].second << "/" << desired[1].second << "\n"
+          << describe(*os);
+    }
+}
+
+// A basket that has drifted off its weights, with no cash to prompt the trade.
+//
+// This is the whole job of a rebalanced benchmark, and it is the one shape that
+// used to be answered with no orders at all: the desired symbols are exactly the
+// held symbols, so nothing is bought outright and nothing is sold outright, and a
+// portfolio with no cash to invest looked from there like a portfolio with
+// nothing to do. Equal weights and one asset per basket hid it -- with a single
+// holding "same symbols" really does mean "already on target".
+//
+// It matters that the cash is zero rather than merely small. Dividends land in
+// cash every month and would have carried the rebalance through this path
+// anyway, so the failure was invisible in a backtest and would have surfaced as a
+// 60/40 benchmark that tracked its weights only as closely as its dividend
+// calendar allowed.
+TEST_F(PortfolioChangeTest, DriftedWeightsAreRestoredWithoutFreshCash)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 50.0 }
+    };
+
+    // 70/30 by value, wanted at 60/40.
+    const auto before = Portfolio{
+      .cash = 0.0, .equities = {{"A", 700.0}, {"B", 600.0}}
+    };
+    const vector<pair<string, double>> desired = {
+      {"A", 60.0},
+      {"B", 40.0}
+    };
+    const auto os = orders(BrokerCostScheme::flat_10bp, before, desired);
+    ASSERT_TRUE(os.has_value()) << os.error();
+    ASSERT_FALSE(os->empty()) << "the basket is 10 points off its weights and nothing else will move it";
+
+    const auto after = fill(before, *os, BrokerCostScheme::flat_10bp);
+    EXPECT_GE(after.cash, -k_min_cash_amount_to_trade) << "the orders spend money the portfolio does not have\n"
+                                                       << describe(*os);
+    EXPECT_NEAR(value_fraction(after, "A", prices), 0.6, 1e-3) << describe(*os);
+}
+
+// The other side of that, and the reason the case above cannot be answered by
+// always trading: a basket already on its weights, with no cash, is a month with
+// nothing to do. Without the early return that used to cover this shape it is now
+// the scaling solve that has to reach the same answer -- every order it proposes
+// is below the rebalancing threshold, and it has to come back empty-handed rather
+// than churn the portfolio or fail to terminate.
+TEST_F(PortfolioChangeTest, BasketAlreadyOnItsWeightsIsLeftAlone)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 50.0 }
+    };
+
+    // Exactly 60/40 by value.
+    const auto before = Portfolio{
+      .cash = 0.0, .equities = {{"A", 600.0}, {"B", 800.0}}
+    };
+    const vector<pair<string, double>> desired = {
+      {"A", 60.0},
+      {"B", 40.0}
+    };
+    const auto os = orders(BrokerCostScheme::flat_10bp, before, desired);
+    ASSERT_TRUE(os.has_value()) << os.error();
+    EXPECT_TRUE(os->empty()) << "nothing has drifted and there is no cash to invest\n" << describe(*os);
+}
+
+// A weight of zero names an asset the basket does not want, which is the same
+// thing as leaving it out. Worth pinning separately because it is the one value
+// that reaches the weighting arithmetic and has to be intercepted before it: a
+// zero-weight holding treated as a keep would divide by a zero target, and a
+// zero-weight symbol treated as a buy would order nothing forever.
+TEST_F(PortfolioChangeTest, ZeroWeightIsSoldOutRatherThanHeld)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 50.0 },
+      {"C", 25.0 }
+    };
+
+    const auto before = Portfolio{
+      .cash = 0.0, .equities = {{"A", 700.0}, {"B", 600.0}}
+    };
+    // B is dropped by weight, C is named at zero and never held.
+    const vector<pair<string, double>> desired = {
+      {"A", 100.0},
+      {"B", 0.0  },
+      {"C", 0.0  }
+    };
+    const auto os = orders(BrokerCostScheme::flat_10bp, before, desired);
+    ASSERT_TRUE(os.has_value()) << os.error();
+
+    const auto after = fill(before, *os, BrokerCostScheme::flat_10bp);
+    EXPECT_FALSE(after.equities.contains("B")) << "B is wanted at zero, so it is not wanted\n" << describe(*os);
+    EXPECT_FALSE(after.equities.contains("C")) << "a zero weight is not a reason to buy\n" << describe(*os);
+    EXPECT_NEAR(after.cash, 0.0, 2 * k_min_cash_amount_to_trade) << describe(*os);
+    EXPECT_NEAR(value_fraction(after, "A", prices), 1.0, 1e-6) << describe(*os);
+}
+
+// Weights the arithmetic cannot act on, refused up front rather than turned into
+// orders. Both would otherwise pass the only check the weighting itself makes --
+// that the weights sum to something positive and finite -- and surface much
+// later: a negative weight as an order to sell more than is held, reported by
+// apply_market_orders() against a symbol whose weight it never saw, and a
+// duplicate as a silently under-allocated basket, because the sum counts the
+// symbol twice while the basket holds it once.
+TEST_F(PortfolioChangeTest, UnusableWeightsAreReported)
+{
+    prices = {
+      {"A", 100.0},
+      {"B", 50.0 }
+    };
+
+    const auto before = Portfolio{.cash = 100'000.0};
+
+    const vector<pair<string, double>> negative = {
+      {"A", 120.0},
+      {"B", -20.0}
+    };
+    EXPECT_FALSE(orders(BrokerCostScheme::flat_10bp, before, negative).has_value())
+      << "a negative weight is not a short position, it is a mistake";
+
+    const vector<pair<string, double>> duplicated = {
+      {"A", 60.0},
+      {"B", 40.0},
+      {"A", 60.0}
+    };
+    EXPECT_FALSE(orders(BrokerCostScheme::flat_10bp, before, duplicated).has_value())
+      << "one symbol cannot have two weights";
+
+    const vector<pair<string, double>> not_finite = {
+      {"A", 60.0},
+      {"B", NAN }
+    };
+    EXPECT_FALSE(orders(BrokerCostScheme::flat_10bp, before, not_finite).has_value());
+}
+
+// The unweighted overloads forward to these by handing every symbol a weight of
+// 1, so the two have to be the same call. Asserted on the filled portfolio rather
+// than on the orders because that is the level the equivalence is claimed at, and
+// checked from a lopsided starting basket so the scaling solve has real work to
+// do in both.
+//
+// What this pins is that the equal-weight path has no arithmetic of its own left
+// to drift from the weighted one.
+TEST_F(PortfolioChangeTest, UniformWeightsMatchTheUnweightedOverload)
+{
+    constexpr auto broker_scheme = BrokerCostScheme::flat_20bp;
+    prices = {
+      {"OLD", 100.0},
+      {"A",   100.0},
+      {"B",   25.0 },
+      {"C",   7.0  }
+    };
+
+    const auto before = Portfolio{
+      .cash = 5'000.0, .equities = {{"OLD", 1'000.0}, {"A", 300.0}}
+    };
+
+    const vector<string> plain_basket = {"A", "B", "C"};
+    const vector<pair<string, double>> weighted_basket = {
+      {"A", 1.0},
+      {"B", 1.0},
+      {"C", 1.0}
+    };
+
+    const auto plain = orders(broker_scheme, before, plain_basket);
+    ASSERT_TRUE(plain.has_value()) << plain.error();
+    const auto weighted = orders(broker_scheme, before, weighted_basket);
+    ASSERT_TRUE(weighted.has_value()) << weighted.error();
+
+    auto from_plain = fill(before, *plain, broker_scheme);
+    auto from_weighted = fill(before, *weighted, broker_scheme);
+
+    EXPECT_NEAR(from_weighted.cash, from_plain.cash, 1e-9) << describe(*weighted);
+    for (const auto& symbol : prices.keys()) {
+        // operator[] rather than at(): a symbol fill() closed out is absent from one
+        // map, and absent and zero are the same holding.
+        EXPECT_NEAR(from_weighted.equities[symbol], from_plain.equities[symbol], 1e-9) << symbol;
+    }
 }
 
 // ------------------------------------------------------- apply_market_orders()

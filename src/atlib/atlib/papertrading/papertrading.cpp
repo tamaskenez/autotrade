@@ -83,19 +83,12 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   chr::local_days past_trading_day
 )
 {
-    auto result = std::flat_map<string, double>();
-    for (const auto& s : current_portfolio.equities.keys()) {
-        TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& daily_bar, market_data.daily_bar(s, past_trading_day));
-        result[s] = daily_bar.close;
-    }
-    for (const auto& s : desired_portfolio) {
-        if (!result.contains(s)) {
-            TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& daily_bar, market_data.daily_bar(s, past_trading_day));
-            result[s] = daily_bar.close;
-        }
-    }
     return market_orders_from_portfolio_change(
-      broker_scheme, result, current_portfolio, make_uniformly_weighted_portfolio(MOVE(desired_portfolio))
+      broker_scheme,
+      market_data,
+      current_portfolio,
+      make_uniformly_weighted_portfolio(MOVE(desired_portfolio)),
+      past_trading_day
     );
 }
 
@@ -166,28 +159,48 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
   const vector<pair<string, double>>& desired_portfolio
 )
 {
+    // Validate portfolio.
+    {
+        constexpr size_t k_max_portfolio_size_for_quadratic_validation = 10;
+        CHECK(desired_portfolio.size() <= k_max_portfolio_size_for_quadratic_validation);
+        for (size_t i = 0; i < desired_portfolio.size(); ++i) {
+            if (!std::isfinite(desired_portfolio[i].second) || desired_portfolio[i].second < 0) {
+                return unexpected(format(
+                  "Invalid weight in desired portfolio for {}: {}",
+                  desired_portfolio[i].first,
+                  desired_portfolio[i].second
+                ));
+            }
+            for (size_t j = i + 1; j < desired_portfolio.size(); ++j) {
+                if (desired_portfolio[i].first == desired_portfolio[j].first) {
+                    return unexpected(format("Duplicate symbol in desired portfolio: {}", desired_portfolio[i].first));
+                }
+            }
+        }
+    }
     // Determine the 3 sets of equities, (A - B), (B - A) and (A intersection B).
     // Note that the assets_to_keep will contain equities that might need to be bought or sold
-    // to maintain equal proportions.
+    // to maintain desired weights.
     vector<string> assets_to_buy, assets_to_sell, assets_to_keep;
     for (auto&& [symbol, q] : current_portfolio.equities) {
         if (q == 0) {
             continue;
         }
         CHECK(q > 0); // Short positions are not handled for now.
-        if (ra::find(desired_portfolio, symbol, &pair<string, double>::first) == desired_portfolio.end()) {
+        if (const auto it = ra::find(desired_portfolio, symbol, &pair<string, double>::first);
+            it == desired_portfolio.end() || it->second == 0) {
             assets_to_sell.push_back(symbol);
         } else {
             assets_to_keep.push_back(symbol);
         }
     }
-    for (const auto& [s, _] : desired_portfolio) {
+    for (const auto& [s, w] : desired_portfolio) {
+        if (w == 0) {
+            continue;
+        }
         if (auto it = current_portfolio.equities.find(s); it == current_portfolio.equities.end() || it->second == 0) {
             assets_to_buy.push_back(s);
         }
-    }
-    if (assets_to_buy.empty() && assets_to_sell.empty() && abs(current_portfolio.cash) < k_min_cash_amount_to_trade) {
-        return {};
     }
 
     // First, take care of selling the assets we don't need.
@@ -248,11 +261,16 @@ expected<vector<MarketOrder>, string> market_orders_from_portfolio_change(
           ra::fold_left(desired_portfolio, 0.0, [](double x, const pair<string, double>& y) {
               return x + y.second;
           });
+        // The next condition is a CHECK (not return expected) because we've already made sure all weights are finite
+        // and nonnegative. Also, we should have bailed out earlier if the all weights are zero.
         CHECK(std::isfinite(sum_desired_assets_weights) && sum_desired_assets_weights > 0);
         const double unit_weight_value = final_trade_value_of_desired_assets / sum_desired_assets_weights;
         for (const auto& [s, w] : desired_portfolio) {
+            if (w == 0) {
+                continue;
+            }
             auto it = assets_to_buy_and_sell.find(s);
-            CHECK(it != assets_to_buy_and_sell.end());
+            CHECK(it != assets_to_buy_and_sell.end()); // Guaranteed by the construction of assets_to_buy_and_sell.
             it->second.desired_asset_trade_value = w * unit_weight_value;
         }
     }

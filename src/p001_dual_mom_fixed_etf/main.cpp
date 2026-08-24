@@ -20,7 +20,7 @@ enum class BacktestPeriod {
 };
 
 constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::single_default;
+constexpr auto k_backtest_command = BacktestCommand::benchmark_60_40;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
 constexpr auto k_provider = Provider::tiingo;
 
@@ -41,24 +41,43 @@ expected<BacktestReport, string> run_custom_backtest(
 
 using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
 
+pair<chr::year_month, chr::year_month> backtest_start_end_month(BacktestPeriod period)
+{
+    switch (period) {
+    case BacktestPeriod::in_sample:
+        return {1997y / chr::May, 2013y / chr::January};
+    case BacktestPeriod::validation:
+        return {2013y / chr::January, 2019y / chr::January};
+    case BacktestPeriod::out_of_sample:
+        return {2020y / chr::January, 2026y / chr::August};
+    }
+    std::unreachable();
+}
+
+void prepend_equities_with_proxy(
+  MarketData& market_data, const dual_mom_fixed_etf_algorithm::Config& ac, chr::year_month end_month
+)
+{
+    constexpr auto k_skipped_first_days = chr::days(180);
+    auto all_assets = ac.equities;
+    if (ac.defensive_asset) {
+        all_assets.push_back(*ac.defensive_asset);
+    }
+    for (const auto& e : all_assets) {
+        if (e == "IEF") {
+            TRY_OR_FAIL(market_data.prepend_equity_with_proxy(
+              "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", k_skipped_first_days
+            ));
+        } else if (e == "EFA") {
+            TRY_OR_FAIL(market_data.prepend_equity_with_proxy(
+              "EFA", chr::local_days(end_month / chr::day(1)), "VGTSX", k_skipped_first_days
+            ));
+        }
+    }
+}
 expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
 {
-    chr::year_month start_month{}, end_month{};
-
-    switch (k_backtest_period) {
-    case BacktestPeriod::in_sample:
-        start_month = 1997y / chr::May;
-        end_month = 2013y / chr::January;
-        break;
-    case BacktestPeriod::validation:
-        start_month = 2013y / chr::January;
-        end_month = 2019y / chr::January;
-        break;
-    case BacktestPeriod::out_of_sample:
-        start_month = 2020y / chr::January;
-        end_month = 2026y / chr::August;
-        break;
-    }
+    const auto [start_month, end_month] = backtest_start_end_month(k_backtest_period);
 
     const auto bc = BacktestConfig{
       .broker_cost_scheme = k_broker_cost_scheme,
@@ -68,51 +87,26 @@ expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
     };
 
     const auto ac = dual_mom_fixed_etf_algorithm::Config{
-      .equities = get_all_assets(benchmark_type), // Used only for determining trading days.
+      .equities = get_benchmark_assets(benchmark_type), // Used only for determining trading days.
       .defensive_asset = nullopt,
       .cash_proxy = "DTB3",
-      .lookback_period = chr::days(1), // Not used here.
+      .lookback_period = chr::days(0), // Not used here.
       .rebalance_day = RebalanceDay::last_trading_day_of_month,
-      .max_portfolio_size = 1 // Not used here.
+      .max_portfolio_size = 0 // Not used here.
     };
 
     const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
     auto market_data = make_unique<MarketData>(mdcfg, bc.provider);
 
-    for (auto& e : get_all_assets(benchmark_type)) {
-        if (e == "IEF") {
-            TRY_OR_FAIL(market_data->prepend_equity_with_proxy(
-              "IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180)
-            ));
-        } else if (e == "SPY") {
-            // Nothing to do.
-        } else {
-            LOG(FATAL) << format("Unexpected equity: {}", e);
-        }
-    }
+    prepend_equities_with_proxy(*market_data, ac, end_month);
 
-    return run_backtest(bc, ac, MOVE(market_data), benchmark_type);
+    return run_backtest(bc, ac, MOVE(market_data), get_benchmark_portfolio(benchmark_type));
 }
 
 expected<BacktestReport, string>
 run_backtest_grid_cell(Universe universe, chr::months lookback_period, RebalanceDay rebelance_day)
 {
-    chr::year_month start_month{}, end_month{};
-
-    switch (k_backtest_period) {
-    case BacktestPeriod::in_sample:
-        start_month = 1997y / chr::May;
-        end_month = 2013y / chr::January;
-        break;
-    case BacktestPeriod::validation:
-        start_month = 2013y / chr::January;
-        end_month = 2019y / chr::January;
-        break;
-    case BacktestPeriod::out_of_sample:
-        start_month = 2020y / chr::January;
-        end_month = 2026y / chr::August;
-        break;
-    }
+    auto [start_month, end_month] = backtest_start_end_month(k_backtest_period);
 
     const auto bc = BacktestConfig{
       .broker_cost_scheme = k_broker_cost_scheme,
@@ -154,12 +148,7 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
 
     const auto mdcfg = MarketDataConfig{.workspace_dir = WORKSPACE_DIR};
     auto market_data = make_unique<MarketData>(mdcfg, bc.provider);
-    TRY_OR_FAIL(
-      market_data->prepend_equity_with_proxy("IEF", chr::local_days(end_month / chr::day(1)), "VFITX", chr::days(180))
-    );
-    TRY_OR_FAIL(
-      market_data->prepend_equity_with_proxy("EFA", chr::local_days(end_month / chr::day(1)), "VGTSX", chr::days(180))
-    );
+    prepend_equities_with_proxy(*market_data, ac, end_month);
 
     return run_backtest(bc, ac, MOVE(market_data));
 }

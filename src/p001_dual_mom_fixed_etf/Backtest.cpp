@@ -3,9 +3,7 @@
 #include "atlib/papertrading/papertrading.h"
 
 #include <magic_enum/magic_enum.hpp>
-
-#include "benchmarks.h"
-#include "meadow/math.h"
+#include <meadow/math.h>
 
 namespace
 {
@@ -58,8 +56,10 @@ first_trading_day_of_month(MarketData& market_data, chr::year_month month, const
     return unexpected(format("Couldn't find a trading day in the month {}.", month));
 }
 
+using RebalanceDay = dual_mom_fixed_etf_algorithm::RebalanceDay;
+
 expected<chr::local_days, string> first_rebalance_day_of_month(
-  MarketData& market_data, chr::year_month month, const dual_mom_fixed_etf_algorithm::Config& ac
+  MarketData& market_data, chr::year_month month, RebalanceDay rebalance_day_pattern, const vector<string>& all_assets
 )
 {
     using namespace std::chrono_literals;
@@ -69,7 +69,9 @@ expected<chr::local_days, string> first_rebalance_day_of_month(
     for (auto day = begin_day; day < end_day; ++day) {
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           const auto& maybe_rebalance_day,
-          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(market_data, ac, day)
+          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(
+            market_data, rebalance_day_pattern, all_assets, day
+          )
         );
         if (auto rebalance_day = switch_variant(
               maybe_rebalance_day,
@@ -91,7 +93,7 @@ expected<BacktestReport, string> run_backtest(
   const BacktestConfig& bc,
   const dual_mom_fixed_etf_algorithm::Config& ac,
   unique_ptr<MarketData> maybe_market_data,
-  optional<BenchmarkType> benchmark_type
+  const optional<vector<pair<string, double>>>& fixed_portfolio
 )
 {
     if (!maybe_market_data) {
@@ -108,7 +110,7 @@ expected<BacktestReport, string> run_backtest(
 
     CHECK(bc.start_month < bc.end_month);
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
-      const auto start_date, first_rebalance_day_of_month(market_data, bc.start_month, ac)
+      const auto start_date, first_rebalance_day_of_month(market_data, bc.start_month, ac.rebalance_day, all_assets)
     );
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
       const auto end_date, first_trading_day_of_month(market_data, bc.end_month, all_assets)
@@ -219,7 +221,9 @@ expected<BacktestReport, string> run_backtest(
         // out that day 30 was a trading day by checking on the 31th.
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           const auto& maybe_rebalance_day,
-          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(market_data, ac, past_trading_day)
+          dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(
+            market_data, ac.rebalance_day, all_assets, past_trading_day
+          )
         );
 
         const auto rebalance_result = switch_variant(
@@ -229,8 +233,8 @@ expected<BacktestReport, string> run_backtest(
                   return unexpected("Pending market orders should be cleared before rebalancing.");
               }
               vector<pair<string, double>> desired_portfolio;
-              if (benchmark_type) {
-                  desired_portfolio = get_benchmark_portfolio(*benchmark_type);
+              if (fixed_portfolio) {
+                  desired_portfolio = *fixed_portfolio;
               } else {
                   TRY_ASSIGN_OR_RETURN_UNEXPECTED(
                     auto response, dual_mom_fixed_etf_algorithm::rebalance(market_data, ac, rebalance_day)
