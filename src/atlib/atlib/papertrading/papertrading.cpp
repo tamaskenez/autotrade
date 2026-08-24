@@ -4,8 +4,6 @@
 
 #include <meadow/math.h>
 
-#include "meadow/matlab.h"
-
 namespace
 {
 struct BrokerCostConfig {

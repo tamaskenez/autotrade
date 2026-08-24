@@ -12,8 +12,10 @@ vector<pair<string, double>> get_benchmark_portfolio(BenchmarkType benchmark_typ
 
 vector<string> get_all_assets(BenchmarkType benchmark_type)
 {
+    const auto bp = get_benchmark_portfolio(benchmark_type);
     vector<string> result;
-    for (auto& [k, v] : get_benchmark_portfolio(benchmark_type)) {
+    result.reserve(bp.size());
+    for (const auto& [k, _] : bp) {
         result.push_back(k);
     }
     return result;
