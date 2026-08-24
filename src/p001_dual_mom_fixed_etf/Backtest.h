@@ -6,8 +6,6 @@
 #include "atlib/marketdata/MarketData.h"
 #include "atlib/papertrading/papertrading.h"
 
-#include <meadow/finance.h>
-
 struct BacktestConfig {
     BrokerCostScheme broker_cost_scheme;
     Provider provider;
@@ -18,5 +16,8 @@ struct BacktestConfig {
 
 // If no market_date supplied, the backtest will create its own one.
 expected<BacktestReport, string> run_backtest(
-  const BacktestConfig& bc, const dual_mom_fixed_etf_algorithm::Config& ac, unique_ptr<MarketData> maybe_market_data
+  const BacktestConfig& bc,
+  const dual_mom_fixed_etf_algorithm::Config& ac,
+  unique_ptr<MarketData> maybe_market_data,
+  const optional<vector<pair<string, double>>>& fixed_portfolio = nullopt // For benchmarks.
 );

@@ -161,9 +161,6 @@ do_all_assets_have_daily_bars(MarketData& market_data, const vector<string>& all
     return bar_avail;
 }
 
-// Everything both entry points need to be true of a Config before either touches
-// any data. Checked in both, because either can be called first and a caller that
-// only ever hits one of them would otherwise never learn the config is unusable.
 expected<void, string> validate(const Config& config)
 {
     if (config.equities.empty()) {
@@ -347,16 +344,10 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_last_trading_da
 }
 } // namespace
 
-expected<variant<chr::local_days, NotARebalanceDay>, string>
-get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, chr::local_days past_day)
+expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_for_past_day(
+  MarketData& market_data, RebalanceDay rebalance_day, const vector<string>& all_assets, chr::local_days past_day
+)
 {
-    if (const auto valid = validate(config); !valid) {
-        return unexpected(valid.error());
-    }
-    vector<string> all_assets = config.equities;
-    if (config.defensive_asset) {
-        all_assets.push_back(*config.defensive_asset);
-    }
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(
       const auto& bar_avail, do_all_assets_have_daily_bars(market_data, all_assets, past_day)
     );
@@ -387,7 +378,7 @@ get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, ch
           chr::local_days(first_day_of_month)
         );
     };
-    switch (config.rebalance_day) {
+    switch (rebalance_day) {
     case RebalanceDay::first_trading_day_of_month:
         return nth_day_of_month(chr::day(1));
     case RebalanceDay::month_10th:

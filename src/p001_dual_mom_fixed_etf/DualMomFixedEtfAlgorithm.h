@@ -81,8 +81,9 @@ struct NotARebalanceDay {
 //
 // `past_day` (and days before it which might be queried according to the config.rebalance_day) can't be
 // before the first (historical bar) of any asset.
-expected<variant<chr::local_days, NotARebalanceDay>, string>
-get_rebalance_day_for_past_day(MarketData& market_data, const Config& config, chr::local_days past_day);
+expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_for_past_day(
+  MarketData& market_data, RebalanceDay rebalance_day, const vector<string>& all_assets, chr::local_days past_day
+);
 
 // `past_trading_day` must have been a trading day with all the asset's daily bars available.
 expected<Response, string> rebalance(MarketData& market_data, const Config& config, chr::local_days past_trading_day);
