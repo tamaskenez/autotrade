@@ -20,7 +20,7 @@ enum class BacktestPeriod {
 };
 
 constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::benchmark_60_40;
+constexpr auto k_backtest_command = BacktestCommand::single_default;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
 constexpr auto k_provider = Provider::tiingo;
 
