@@ -273,7 +273,7 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_past_day_if_fir
 )
 {
     if (past_day < first_day_of_segment) {
-        return NotARebalanceDay{format("{} is before the first day of segment.", past_day, first_day_of_segment)};
+        return NotARebalanceDay{format("{} is before the first day of segment ({}).", past_day, first_day_of_segment)};
     }
     if (!has_daily_bar) {
         // It can't be the first trading day since it's not a trading day.
@@ -393,8 +393,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_f
     case RebalanceDay::month_15th:
         return nth_day_of_month(chr::day(15));
     case RebalanceDay::last_trading_day_of_month: {
-        const chr::year_month_day ymd{past_day};
-        const auto first_day_of_month = ymd.year() / ymd.month() / chr::day{1};
+        const chr::year_month_day ymd(past_day);
+        const auto first_day_of_month = ymd.year() / ymd.month() / chr::day(1);
         const auto last_day_of_month = ymd.year() / ymd.month() / chr::last;
         return get_last_trading_day_if_period_complete(
           market_data,
@@ -425,8 +425,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_f
         );
     }
     case RebalanceDay::last_trading_day_of_week: {
-        const chr::weekday wd{past_day};
-        const auto first_day_of_week = chr::local_days(past_day - (wd - chr::Monday));
+        const chr::weekday wd(past_day);
+        const auto first_day_of_week = past_day - (wd - chr::Monday);
         return get_last_trading_day_if_period_complete(
           market_data,
           all_assets,

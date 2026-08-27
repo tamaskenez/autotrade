@@ -53,7 +53,7 @@ expected<chr::local_days, string> first_trading_day_on_or_before(
             return day;
         }
     }
-    return unexpected(format("Couldn't find a trading day from {} back to.", day_arg, earliest_day));
+    return unexpected(format("Couldn't find a trading day from {} back to {}.", day_arg, earliest_day));
 }
 
 expected<chr::local_days, string> first_trading_day_on_or_after(
@@ -242,18 +242,18 @@ expected<BacktestReport, string> run_backtest(
     }
 
     if (!bc.initial_desired_portfolio.empty()) {
+        const auto effective_rebalance_day = first_trading_day_before_window.value_or(first_trading_day_within_window);
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
           auto market_orders,
           market_orders_from_portfolio_change(
-            bc.broker_cost_scheme,
-            market_data,
-            portfolio,
-            bc.initial_desired_portfolio,
-            first_trading_day_before_window.value_or(first_trading_day_within_window)
+            bc.broker_cost_scheme, market_data, portfolio, bc.initial_desired_portfolio, effective_rebalance_day
           )
         );
         if (!market_orders.empty()) {
             pending_market_orders = MOVE(market_orders);
+            pending_signal_report = PendingSignalReport{
+              .date = effective_rebalance_day, .return_factors = {}
+            }; // Empty return_factors will print NANs.
         }
     }
     const auto first_day = first_trading_day_before_window ? *first_trading_day_before_window + chr::days(1)
@@ -348,11 +348,84 @@ expected<BacktestReport, string> run_backtest(
         // if our rebalance days are last-trading-day-of-month and day 31. is not a trading day, we can only figure
         // out that day 30 was a trading day by checking on the 31th.
         TRY_ASSIGN_OR_RETURN_UNEXPECTED(
-          const auto& maybe_rebalance_day,
+          const auto maybe_rebalance_day_1,
           dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(
             market_data, ac.rebalance_day, all_assets, past_day
           )
         );
+
+        using get_rebalance_day_t = variant<chr::local_days, dual_mom_fixed_etf_algorithm::NotARebalanceDay>;
+        using expected_get_rebalance_day_t = expected<get_rebalance_day_t, string>;
+
+        get_rebalance_day_t maybe_rebalance_day;
+
+        {
+            const auto maybe_rebalance_day_2_or = switch_variant(
+              maybe_rebalance_day_1,
+              [&](chr::local_days rebalance_day) -> expected_get_rebalance_day_t {
+                  // Ignore the rebalance day if it's before the first day of the window.
+                  if (rebalance_day < first_trading_day_within_window) {
+                      return dual_mom_fixed_etf_algorithm::NotARebalanceDay{
+                        .why = format(
+                          "Rebalance day {} is before the first trading day within the window ({})",
+                          rebalance_day,
+                          first_trading_day_within_window
+                        )
+                      };
+                  } else {
+                      return rebalance_day;
+                  }
+              },
+              [&](const dual_mom_fixed_etf_algorithm::NotARebalanceDay& narb) -> expected_get_rebalance_day_t {
+                  // Also we need to cheat near the last day: in the case of last-trading-day-of-week/month policy we
+                  // need to make sure the last_trading_day is recognized as a rebalance day, even if it's not the last
+                  // calendar day of the week/month (in which case it would be returned only when asking on the last day
+                  // of the week/month).
+                  if (past_day != last_trading_day) {
+                      return narb;
+                  }
+                  chr::local_days last_day_of_period;
+                  switch (ac.rebalance_day) {
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::first_trading_day_of_month:
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::first_trading_day_of_week:
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::month_10th:
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::month_15th:
+                      return narb;
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_month: {
+                      const chr::year_month_day ymd(past_day);
+                      last_day_of_period = chr::local_days(ymd.year() / ymd.month() / chr::last);
+                  } break;
+                  case dual_mom_fixed_etf_algorithm::RebalanceDay::last_trading_day_of_week:
+                      last_day_of_period = past_day - (chr::weekday(past_day) - chr::Monday) + chr::days(6);
+                      break;
+                  }
+
+                  market_data.set_as_of(last_day_of_period);
+                  TRY_ASSIGN_OR_RETURN_UNEXPECTED(
+                    const auto maybe_rebalance_day_from_last_day,
+                    dual_mom_fixed_etf_algorithm::get_rebalance_day_for_past_day(
+                      market_data, ac.rebalance_day, all_assets, last_day_of_period
+                    )
+                  );
+                  market_data.set_as_of(past_day);
+                  return switch_variant(
+                    maybe_rebalance_day_from_last_day,
+                    [&](chr::local_days rebalance_day_from_last_day) -> expected_get_rebalance_day_t {
+                        if (rebalance_day_from_last_day == past_day) {
+                            return past_day;
+                        } else {
+                            return narb;
+                        }
+                    },
+                    [&](const dual_mom_fixed_etf_algorithm::NotARebalanceDay&) -> expected_get_rebalance_day_t {
+                        return narb;
+                    }
+                  );
+              }
+            );
+
+            TRY_ASSIGN_OR_RETURN_UNEXPECTED(maybe_rebalance_day, MOVE(maybe_rebalance_day_2_or));
+        }
 
         const auto rebalance_result = switch_variant(
           maybe_rebalance_day,

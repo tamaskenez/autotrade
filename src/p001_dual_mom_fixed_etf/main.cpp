@@ -127,13 +127,9 @@ expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
 }
 
 expected<BacktestReport, string>
-run_backtest_grid_cell(Universe universe, chr::months lookback_period, RebalanceDay rebelance_day)
+run_backtest_grid_cell(Universe universe, chr::months lookback_period, RebalanceDay rebalance_day)
 {
     auto [first_day, last_day] = backtest_first_last_day(k_backtest_period);
-
-    const auto bc = BacktestConfig{
-      .broker_cost_scheme = k_broker_cost_scheme, .provider = k_provider, .first_day = first_day, .last_day = last_day
-    };
 
     vector<string> equities;
     optional<string> defensive_asset;
@@ -214,12 +210,21 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
         break;
     }
 
+    const auto bc = BacktestConfig{
+      .broker_cost_scheme = k_broker_cost_scheme,
+      .provider = k_provider,
+      .first_day = first_day,
+      .last_day = last_day,
+      .initial_portfolio = MOVE(initial_portfolio),
+      .initial_desired_portfolio = MOVE(desired_portfolio)
+    };
+
     const auto ac = dual_mom_fixed_etf_algorithm::Config{
       .equities = equities,
       .defensive_asset = defensive_asset,
       .cash_proxy = "DTB3",
       .lookback_period = lookback_period,
-      .rebalance_day = rebelance_day,
+      .rebalance_day = rebalance_day,
       .max_portfolio_size = 1
     };
 

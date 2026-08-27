@@ -52,7 +52,7 @@ const char* top_left(Value v)
     case Value::max_drawdown:
         return "MaxDD";
     case Value::month_end_sharpe:
-        return "MonthEndSharpe";
+        return "Sharpe";
     case Value::worst_rolling_12:
         return "Worst12m";
     case Value::trade_count:

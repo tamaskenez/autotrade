@@ -18,12 +18,16 @@ int handle_single_report(
         println("ERROR: {}", result.error());
         return EXIT_FAILURE;
     }
+    const auto& ph = result->portfolio_history;
+    if (ph.trading_days.empty()) {
+        println("ERROR: no trading days");
+        return EXIT_FAILURE;
+    }
 
     FILE* f = fopen("/tmp/result.m", "wt");
     print(f, "day=[");
     vector<double> tick_datenums;
     vector<string> tick_labels;
-    const auto& ph = result->portfolio_history;
     auto last_ymd = chr::year_month_day(ph.trading_days.front().date);
     for (auto& td : ph.trading_days) {
         const auto d = td.date;
@@ -131,40 +135,40 @@ int handle_single_report(
     vector<string> assets;
     println("");
     println("date,value,position");
-    if (!ph.trading_days.empty()) {
-        vector<size_t> idcs;
-        idcs.reserve(result->rebalance_day_idcs.size() + 1);
-        idcs.push_back(0); // Always add the initial trading day.
-        for (auto ix : result->rebalance_day_idcs) {
-            if (ix + 1 < ph.trading_days.size()) {
-                idcs.push_back(ix + 1); // Execution day is right after rebalance day.
-            }
-        }
-        // Add the last trading day, if needed.
-        if (idcs.back() != ph.trading_days.size() - 1) {
-            idcs.push_back(ph.trading_days.size() - 1);
-        }
-        for (const auto ix : idcs) {
-            const auto& td = result->portfolio_history.trading_days[ix];
 
-            assets.clear();
-            for (auto&& [k, ivs] : result->portfolio_history.equity_position_values) {
-                const auto vs = ivs.get_values_for_key_range(ix, ix + 1);
-                assert(vs.size() == 1);
-                if (vs.front() != 0) {
-                    assets.push_back(k);
-                }
-            }
-            print("{},{:.2f},", td.date, 100.0 * td.total / total0);
-            if (assets.empty()) {
-                println();
-            } else if (assets.size() == 1) {
-                println("{}", assets.front());
-            } else {
-                println("{}", assets);
-            }
+    vector<size_t> idcs;
+    idcs.reserve(result->rebalance_day_idcs.size() + 1);
+    idcs.push_back(0); // Always add the initial trading day.
+    for (auto ix : result->rebalance_day_idcs) {
+        if (ix + 1 < ph.trading_days.size()) {
+            idcs.push_back(ix + 1); // Execution day is right after rebalance day.
         }
     }
+    // Add the last trading day, if needed.
+    if (idcs.back() != ph.trading_days.size() - 1) {
+        idcs.push_back(ph.trading_days.size() - 1);
+    }
+    for (const auto ix : idcs) {
+        const auto& td = result->portfolio_history.trading_days[ix];
+
+        assets.clear();
+        for (auto&& [k, ivs] : result->portfolio_history.equity_position_values) {
+            const auto vs = ivs.get_values_for_key_range(ix, ix + 1);
+            assert(vs.size() == 1);
+            if (vs.front() != 0) {
+                assets.push_back(k);
+            }
+        }
+        print("{},{:.2f},", td.date, 100.0 * td.total / total0);
+        if (assets.empty()) {
+            println();
+        } else if (assets.size() == 1) {
+            println("{}", assets.front());
+        } else {
+            println("{}", assets);
+        }
+    }
+
     println("=== SWITCH SEQUENCE ===");
     println("{}", result->switch_sequence);
     if (result->pending_market_orders.empty()) {

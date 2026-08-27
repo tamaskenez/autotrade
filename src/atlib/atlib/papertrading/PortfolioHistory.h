@@ -17,9 +17,6 @@ struct PortfolioHistory {
       const std::flat_map<string, double>& equity_prices
     );
 
-    // Remove trading days and intervals from trading_days[n]. No-op if trading_days is already smaller.
-    void trading_days_truncate(size_t n);
-
     // Return cash snapshots, the returned vector corresponds to the `trading_days` vector.
     NODIS vector<double> cash_for_trading_days() const;
 

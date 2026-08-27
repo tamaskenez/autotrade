@@ -3,19 +3,6 @@
 #include "atlib/chrono.h"
 #include "atlib/papertrading/papertrading.h"
 
-void PortfolioHistory::trading_days_truncate(size_t n)
-{
-    if (trading_days.size() <= n) {
-        return;
-    }
-    trading_days.resize(n);
-
-    cash.erase_from(n);
-    for (auto&& [_, v] : equity_position_values) {
-        v.erase_from(n);
-    }
-}
-
 void PortfolioHistory::make_snapshot(
   chr::local_days date,
   double cash_proxy_level,
