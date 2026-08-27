@@ -39,7 +39,7 @@ void print_report_table(string_view top_left, array<double, 9> xs)
 enum class Value {
     cagr,
     max_drawdown,
-    sharpe,
+    month_end_sharpe,
     worst_rolling_12,
     trade_count
 };
@@ -51,8 +51,8 @@ const char* top_left(Value v)
         return "CAGR (%)";
     case Value::max_drawdown:
         return "MaxDD";
-    case Value::sharpe:
-        return "Sharpe";
+    case Value::month_end_sharpe:
+        return "MonthEndSharpe";
     case Value::worst_rolling_12:
         return "Worst12m";
     case Value::trade_count:
@@ -65,7 +65,7 @@ void print_grid_report(const vector<UniverseResult>& urs)
 {
     for (const auto& ur : urs) {
         println("Universe: {}", toupper(magic_enum::enum_name(ur.universe)));
-        for (auto ev : magic_enum::enum_values<Value>()) {
+        for (const auto ev : magic_enum::enum_values<Value>()) {
             array<double, 9> xs;
             size_t i = 0;
             for (const auto timing :
@@ -83,9 +83,10 @@ void print_grid_report(const vector<UniverseResult>& urs)
                     case Value::max_drawdown:
                         v = 100 * ph.max_drawdown_and_longest_underwater_days().first;
                         break;
-                    case Value::sharpe:
-                        v =
-                          ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, it->second.rebalance_day_idcs);
+                    case Value::month_end_sharpe:
+                        // Calculated across last days of months.
+                        v = ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, ph.monthly_sharpe_indices())
+                              .value_or(NAN);
                         break;
                     case Value::worst_rolling_12:
                         v = 100 * ph.worst_12_month_return().value_or(NAN);
@@ -135,7 +136,7 @@ void print_csv_report_line(string_view universe, string_view lookback, Rebalance
       timing_for_csv(timing),
       100 * ph.cagr(),
       100 * ph.max_drawdown_and_longest_underwater_days().first,
-      ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, br.rebalance_day_idcs),
+      ph.sharpe_through_selected_days(SharpeAggregation::arithmetic, ph.monthly_sharpe_indices()).value_or(NAN),
       100 * ph.worst_12_month_return().value_or(NAN),
       ph.num_market_orders,
       ph.num_portfolio_changes

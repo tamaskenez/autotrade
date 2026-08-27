@@ -38,12 +38,18 @@ struct PortfolioHistory {
 
     NODIS pair<double, int> max_drawdown_and_longest_underwater_days() const;
 
-    // Needs at least 2 trading days.
-    NODIS double sharpe_daily(SharpeAggregation aggregation) const;
+    // Return nullopt if not enough days.
+    NODIS optional<double> sharpe_daily(SharpeAggregation aggregation) const;
 
-    // Needs at least 2 indices.
-    NODIS double
+    // Return nullopt if not enough days.
+    NODIS optional<double>
     sharpe_through_selected_days(SharpeAggregation aggregation, span<const size_t> trading_days_indices) const;
+
+    // Return indices of trading days serve as checkpoints for sharpe calculation.
+    // Return the indices of month-end trading days.
+    // Partial months at the beginning or end either merged into the next/previous month (when <= 10 trading days) or
+    // promoted to full months (when >= 11 trading days)
+    NODIS vector<size_t> monthly_sharpe_indices() const;
 
     NODIS optional<double> worst_12_month_return() const;
 
