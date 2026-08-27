@@ -19,8 +19,8 @@ enum class BacktestPeriod {
     out_of_sample
 };
 
-constexpr auto k_backtest_period = BacktestPeriod::in_sample;
-constexpr auto k_backtest_command = BacktestCommand::single_default;
+constexpr auto k_backtest_period = BacktestPeriod::out_of_sample;
+constexpr auto k_backtest_command = BacktestCommand::benchmark_60_40;
 constexpr auto k_broker_cost_scheme = BrokerCostScheme::flat_10bp;
 constexpr auto k_provider = Provider::tiingo;
 
@@ -94,9 +94,8 @@ expected<BacktestReport, string> run_benchmark(BenchmarkType benchmark_type)
         // No initial portfolio
         break;
     case BacktestPeriod::validation:
-        initial_portfolio = portfolio;
-        break;
     case BacktestPeriod::out_of_sample:
+        initial_portfolio = portfolio;
         break;
     }
 
@@ -152,6 +151,10 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
             };
             break;
         case BacktestPeriod::out_of_sample:
+            initial_portfolio = {
+              {"SPY", 1.0}
+            };
+            desired_portfolio = {};
             break;
         }
         break;
@@ -169,6 +172,10 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
             desired_portfolio = initial_portfolio;
             break;
         case BacktestPeriod::out_of_sample:
+            initial_portfolio = {
+              {"SPY", 1.0}
+            };
+            desired_portfolio = {};
             break;
         }
         break;
@@ -186,6 +193,10 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
             desired_portfolio = initial_portfolio;
             break;
         case BacktestPeriod::out_of_sample:
+            initial_portfolio = {
+              {"EFA", 1.0}
+            };
+            desired_portfolio = {};
             break;
         }
         break;
@@ -205,6 +216,10 @@ run_backtest_grid_cell(Universe universe, chr::months lookback_period, Rebalance
             };
             break;
         case BacktestPeriod::out_of_sample:
+            initial_portfolio = {
+              {"SPY", 1.0}
+            };
+            desired_portfolio = {};
             break;
         }
         break;

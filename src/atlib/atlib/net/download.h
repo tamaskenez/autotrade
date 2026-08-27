@@ -22,7 +22,7 @@ struct HttpRequest {
     // any error message that quotes the request.
     vector<pair<string, string>> headers;
 
-    chr::seconds timeout{60};
+    chr::seconds timeout{5};
 };
 
 struct HttpResponse {

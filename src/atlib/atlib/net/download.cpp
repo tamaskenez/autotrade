@@ -34,6 +34,14 @@ CURLcode init_curl_globally_once()
     return instance.code;
 }
 
+// libcurl sends no User-Agent unless told to, and a request without one is not
+// merely anonymous -- FRED's bot filter drops it, without a response, so it costs
+// the full timeout rather than a status code. The filter also wants the shape it
+// gets here: a bare "autotrade/0.1" is refused as well, and a browser
+// impersonation is refused hardest. Identifying the client honestly is what gets
+// let through, and is what a site operator seeing this traffic needs anyway.
+constexpr const char* k_user_agent = "autotrade/0.1 (+https://github.com/tamaskenez/autotrade)";
+
 size_t append_to_string(char* data, size_t size, size_t nmemb, void* userdata)
 {
     const size_t count = size * nmemb;
@@ -128,6 +136,10 @@ expected<HttpResponse, string> http_get(const HttpRequest& request)
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(request.timeout.count()));
 
+    // A "User-Agent" in `request.headers` still wins: libcurl lets the header list
+    // replace what this option sets.
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, k_user_agent);
+
     // curl_easy_strerror only names the category of failure; the buffer is where
     // libcurl writes which host, which certificate, which timeout.
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer.data());
@@ -145,16 +157,20 @@ expected<HttpResponse, string> http_get(const HttpRequest& request)
     // exactly where callers were told to put their credentials. A 3xx comes back
     // as a response for the caller to look at instead.
 
+    println("BEGIN curl_easy_perform {}", request.url);
     if (const CURLcode code = curl_easy_perform(curl); code != CURLE_OK) {
         const string_view detail = error_buffer.data();
         // The bare URL, not the one with the query appended: this string ends up
         // in logs, and query values are the caller's, not ours to publish.
-        return unexpected(
-          format("GET {}: {}", request.url, detail.empty() ? string_view(curl_easy_strerror(code)) : detail)
-        );
+        const auto msg = detail.empty() ? string_view(curl_easy_strerror(code)) : detail;
+        println("ERROR curl_easy_perform {}: {}", request.url, msg);
+
+        return unexpected(format("GET {}: {}", request.url, msg));
     }
 
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status);
+
+    println("OK({}) curl_easy_perform {}", response.status, request.url);
 
     return response;
 }
