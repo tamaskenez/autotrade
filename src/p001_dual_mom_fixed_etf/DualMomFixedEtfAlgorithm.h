@@ -1,5 +1,6 @@
 #pragma once
 
+#include <flat_map>
 #include <meadow/cppext.h>
 
 class MarketData;
@@ -41,6 +42,7 @@ struct Config {
 
 struct Response {
     vector<string> desired_portfolio; // Empty means hold cash.
+    std::flat_map<string, double> return_factors;
 };
 
 // An ordinary day on which nothing is due -- not a failure. `why` is for logging

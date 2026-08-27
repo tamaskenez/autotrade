@@ -260,6 +260,9 @@ first_trading_day_on_or_after(MarketData& market_data, const vector<string>& all
     }
 }
 
+// Consider the period [first_day_of_segment..past_day]:
+// - if `past_day` is the first trading day, return that
+// - otherwise, return NotARebalanceDay
 expected<variant<chr::local_days, NotARebalanceDay>, string> get_past_day_if_first_trading_day_of_period(
   MarketData& market_data,
   const vector<string>& all_assets,
@@ -269,7 +272,11 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_past_day_if_fir
   chr::local_days first_day_of_segment
 )
 {
+    if (past_day < first_day_of_segment) {
+        return NotARebalanceDay{format("{} is before the first day of segment ({}).", past_day, first_day_of_segment)};
+    }
     if (!has_daily_bar) {
+        // It can't be the first trading day since it's not a trading day.
         return NotARebalanceDay{format("{} is not a trading day.", past_day)};
     }
     for (chr::local_days day = first_day_of_segment; day < past_day; ++day) {
@@ -365,17 +372,17 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_f
     };
     TRY_ASSIGN_OR_RETURN_UNEXPECTED(const auto& has_daily_bar, compute_has_daily_bar());
 
-    // Check if the past_day was a rebalance day.
+    // Return past_day if it was the first trading day since the nth_day_of_month.
     const auto nth_day_of_month = [past_day, &all_assets, has_daily_bar, &market_data](chr::day day_of_month) {
         const chr::year_month_day ymd{past_day};
-        const auto first_day_of_month = ymd.year() / ymd.month() / day_of_month;
+        const auto first_day_of_segment = ymd.year() / ymd.month() / day_of_month;
         return get_past_day_if_first_trading_day_of_period(
           market_data,
           all_assets,
           has_daily_bar,
           past_day,
-          "first trading day of month",
-          chr::local_days(first_day_of_month)
+          format("day {} of month", day_of_month),
+          chr::local_days(first_day_of_segment)
         );
     };
     switch (rebalance_day) {
@@ -386,8 +393,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_f
     case RebalanceDay::month_15th:
         return nth_day_of_month(chr::day(15));
     case RebalanceDay::last_trading_day_of_month: {
-        const chr::year_month_day ymd{past_day};
-        const auto first_day_of_month = ymd.year() / ymd.month() / chr::day{1};
+        const chr::year_month_day ymd(past_day);
+        const auto first_day_of_month = ymd.year() / ymd.month() / chr::day(1);
         const auto last_day_of_month = ymd.year() / ymd.month() / chr::last;
         return get_last_trading_day_if_period_complete(
           market_data,
@@ -418,8 +425,8 @@ expected<variant<chr::local_days, NotARebalanceDay>, string> get_rebalance_day_f
         );
     }
     case RebalanceDay::last_trading_day_of_week: {
-        const chr::weekday wd{past_day};
-        const auto first_day_of_week = chr::local_days(past_day - (wd - chr::Monday));
+        const chr::weekday wd(past_day);
+        const auto first_day_of_week = past_day - (wd - chr::Monday);
         return get_last_trading_day_if_period_complete(
           market_data,
           all_assets,
@@ -462,6 +469,8 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
                                                   : last_trading_day_on_or_before(market_data, all_assets, anchor_day)
     );
 
+    std::flat_map<string, double> return_factors;
+
     // Compute equity return factors.
     vector<pair<double, string>> equities_and_return_factors;
     equities_and_return_factors.reserve(config.equities.size());
@@ -471,6 +480,7 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
           market_data.total_equity_return_factor_close_to_close(s, anchor_trading_day, past_trading_day)
         );
         equities_and_return_factors.emplace_back(total_return_factor, s);
+        return_factors[s] = total_return_factor;
     }
 
     // Compute the cash proxy return factor over the same window.
@@ -478,6 +488,7 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
       const auto& cash_factor,
       market_data.total_cash_return_factor(config.cash_proxy, anchor_trading_day, past_trading_day)
     );
+    return_factors[config.cash_proxy] = cash_factor;
 
     // Absolute momentum, applied per asset rather than to the winner alone. At
     // max_portfolio_size 1 the two are the same -- if the winner fails the hurdle
@@ -494,7 +505,7 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
         if (config.defensive_asset) {
             desired_portfolio.push_back(*config.defensive_asset);
         }
-        return Response{.desired_portfolio = MOVE(desired_portfolio)};
+        return Response{.desired_portfolio = MOVE(desired_portfolio), .return_factors = MOVE(return_factors)};
     }
 
     // Descending by return factor, and *stable*, so equal factors keep the order
@@ -516,6 +527,6 @@ expected<Response, string> rebalance(MarketData& market_data, const Config& conf
     for (const auto& p : equities_and_return_factors) {
         desired_portfolio.push_back(p.second);
     }
-    return Response{.desired_portfolio = MOVE(desired_portfolio)};
+    return Response{.desired_portfolio = MOVE(desired_portfolio), .return_factors = MOVE(return_factors)};
 }
 } // namespace dual_mom_fixed_etf_algorithm
